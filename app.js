@@ -7,6 +7,7 @@ const SITUACIONES = [
   { value: 'cursa_primera_vez', label: 'Cursa 1ra vez (regular)' },
   { value: 'recursa', label: 'Recursa (regular)' },
   { value: 'intensifica', label: 'Intensifica' },
+  { value: 'no_cursa_por_edad', label: 'No cursa por edad' },
   { value: 'no_cursa_por_tope', label: 'No cursa por tope (atraso)' },
   { value: 'no_cursa_otro_motivo', label: 'No cursa (otro)' }
 ];
@@ -357,32 +358,31 @@ function autoAdjustTope() {
   if (!state.studentData) return;
   const materias = state.studentData.materias || [];
 
-  // Regular list
+  // Regular list (tope 12 = cursa 1ra vez + recursa)
   const regular = materias.filter(m => m.situacion_actual === 'cursa_primera_vez' || m.situacion_actual === 'recursa');
   if (regular.length <= 12) return;
 
-  // Keep all "cursa_primera_vez" (prioridad nunca cursadas)
-  // If still > 12 (very rare), then drop from the end by año desc (dejar las más prioritarias).
+  // Regla actual: priorizar ADEUDADAS (recursa). Si hay exceso, sacamos primero las de 1ra vez.
   const primera = regular.filter(m => m.situacion_actual === 'cursa_primera_vez');
   const recursa = regular.filter(m => m.situacion_actual === 'recursa');
 
-  // Step 1: move recursas to atraso until total <= 12
   let total = primera.length + recursa.length;
-  const recursaSorted = recursa.slice().sort((a,b) => (b.anio||0)-(a.anio||0)); // mover primero las de años más altos si hay que recortar
   let moved = 0;
 
-  while (total > 12 && recursaSorted.length > 0) {
-    const m = recursaSorted.shift();
+  // Step 1: mover "cursa 1ra vez" a tope hasta quedar en 12
+  const primeraSorted = primera.slice().sort((a,b) => (b.anio||0)-(a.anio||0)); // sacar primero las de año más alto (menos prioritarias si hay adeudas)
+  while (total > 12 && primeraSorted.length > 0) {
+    const m = primeraSorted.shift();
     setMateriaField(m.id_materia, 'situacion_actual', 'no_cursa_por_tope');
     total--;
     moved++;
   }
 
-  // Step 2: if still > 12, we must also move some de primera vez (pero avisamos con alerta)
+  // Step 2 (raro): si aún así supera 12, también mover algunas recursas
   if (total > 12) {
-    const primeraSorted = primera.slice().sort((a,b) => (b.anio||0)-(a.anio||0));
-    while (total > 12 && primeraSorted.length > 0) {
-      const m = primeraSorted.pop(); // mover las de menor prioridad (años menores) al final
+    const recursaSorted = recursa.slice().sort((a,b) => (b.anio||0)-(a.anio||0));
+    while (total > 12 && recursaSorted.length > 0) {
+      const m = recursaSorted.shift();
       setMateriaField(m.id_materia, 'situacion_actual', 'no_cursa_por_tope');
       total--;
       moved++;
@@ -391,6 +391,7 @@ function autoAdjustTope() {
 
   setMessage('saveMsg', moved ? `Ajuste aplicado: se movieron ${moved} materias a “No cursa por tope”.` : 'No hizo falta ajustar.', moved ? 'ok' : '');
 }
+
 
 
 

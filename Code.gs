@@ -391,11 +391,14 @@ function rolloverCycle_(payload) {
   });
 
   const catalogByYear = {};
+  const catalogYearByMid = {};
   catalog.forEach(m => {
     const y = Number(m.anio || '');
     if (isNaN(y) || y <= 0) return;
     if (!catalogByYear[y]) catalogByYear[y] = [];
-    catalogByYear[y].push(String(m.id_materia));
+    const mid = String(m.id_materia);
+    catalogByYear[y].push(mid);
+    catalogYearByMid[mid] = y;
   });
 
   // Adeudadas del ciclo origen (solo si existe)
@@ -428,19 +431,28 @@ function rolloverCycle_(payload) {
   });
 
   // Primero: resetear campos del destino para estudiantes activos (para evitar basura previa)
+  // Además: materias de años FUTUROS quedan como "no_cursa_por_edad".
   rows.forEach((r, i) => {
     const c = String(r[idx['ciclo_lectivo']] || '').trim();
     if (c !== destino) return;
+
     const sid = String(r[idx['id_estudiante']] || '').trim();
     if (!activeSet[sid]) return;
 
-    if (idx['situacion_actual'] !== undefined) r[idx['situacion_actual']] = 'no_cursa_otro_motivo';
-    if (idx['motivo_no_cursa'] !== undefined) r[idx['motivo_no_cursa']] = '';
+    const mid = String(r[idx['id_materia']] || '').trim();
+    const newYear = newGradeByStudent[sid];
+
+    const matYear = catalogYearByMid[mid] || null;
+    const isFuture = (newYear && matYear && matYear > newYear);
+
+    if (idx['situacion_actual'] !== undefined) r[idx['situacion_actual']] = isFuture ? 'no_cursa_por_edad' : 'no_cursa_otro_motivo';
+    if (idx['motivo_no_cursa'] !== undefined) r[idx['motivo_no_cursa']] = isFuture ? 'No cursa por edad (aún no corresponde)' : '';
     if (idx['resultado_cierre'] !== undefined) r[idx['resultado_cierre']] = '';
     if (idx['ciclo_cerrado'] !== undefined) r[idx['ciclo_cerrado']] = false;
     if (idx['fecha_actualizacion'] !== undefined) r[idx['fecha_actualizacion']] = now;
     if (idx['usuario'] !== undefined) r[idx['usuario']] = usuario;
   });
+
 
   let revisionManualCount = 0;
 
@@ -462,53 +474,44 @@ function rolloverCycle_(payload) {
     if (!newYear) return;
 
     const newYearMats = (catalogByYear[newYear] || []).slice();
-    const owed = (owedByStudent[sid] || []).slice();
+    const owedAll = (owedByStudent[sid] || []).slice();
+
+    // Tope: intensifica máx 4 adeudadas
+    const intensifica = owedAll.slice(0, 4);
+    const remainingOwed = owedAll.slice(4);
 
     let primera = [];
     let recursa = [];
-    let intensifica = [];
     let droppedNew = [];
     let overflowOwed = [];
 
-    if (owed.length > 0 && owed.length <= 4) {
-      // Regla: si adeuda hasta 4, esas intensifican (no cuentan en 12)
-      intensifica = owed.slice();
-      primera = newYearMats.slice(); // intentamos que curse todo lo del año
-      // Tope 12: si el catálogo del año supera 12 (raro), recortamos por tope
+    if (newYear === 6) {
+      // Regla especial: 6to tiene prioridad
+      primera = newYearMats.slice();
+
+      // Tope 12 (raro que 6to supere 12, pero lo respetamos igual)
       if (primera.length > 12) {
         droppedNew = primera.slice(12);
         primera = primera.slice(0, 12);
       }
-    } else {
-      // Adeuda > 4 (o 0): se usa recursa con prioridad (excepto 6to)
-      if (newYear === 6) {
-        // Prioridad: todas las de 6to, completar con recursa
-        primera = newYearMats.slice();
-        if (primera.length > 12) {
-          droppedNew = primera.slice(12);
-          primera = primera.slice(0, 12);
-        }
-        const slots = 12 - primera.length;
-        if (owed.length > 0 && slots > 0) {
-          recursa = owed.slice(0, slots);
-          overflowOwed = owed.slice(slots);
-        } else if (owed.length > 0) {
-          overflowOwed = owed.slice();
-        }
-      } else {
-        // Otros años: prioridad recursadas (adeudadas), el año nuevo queda "no cursa por tope" si excede 12
-        const recCount = Math.min(owed.length, 12);
-        recursa = owed.slice(0, recCount);
-        overflowOwed = owed.slice(recCount);
 
-        const slots = 12 - recursa.length;
-        if (slots > 0) {
-          primera = newYearMats.slice(0, slots);
-          droppedNew = newYearMats.slice(slots);
-        } else {
-          droppedNew = newYearMats.slice();
-        }
+      const slots = 12 - primera.length;
+      if (slots > 0) {
+        recursa = remainingOwed.slice(0, slots);
+        overflowOwed = remainingOwed.slice(slots);
+      } else {
+        overflowOwed = remainingOwed.slice();
       }
+    } else {
+      // Base: cursa todo el año por 1ra vez, pero:
+      // si hay muchas adeudadas, las recursa y puede sacar materias de 1ra vez por tope 12.
+      const recMax = Math.min(remainingOwed.length, 12);
+      recursa = remainingOwed.slice(0, recMax);
+      overflowOwed = remainingOwed.slice(recMax);
+
+      const capacityForPrimera = Math.max(0, 12 - recursa.length);
+      primera = newYearMats.slice(0, capacityForPrimera);
+      droppedNew = newYearMats.slice(capacityForPrimera);
     }
 
     // Aplicar al destino
@@ -519,7 +522,6 @@ function rolloverCycle_(payload) {
     droppedNew.forEach(mid => setDest_(sid, mid, { situacion_actual: 'no_cursa_por_tope', motivo_no_cursa: 'No cursa por tope 12 (prioriza adeudadas)' }));
     overflowOwed.forEach(mid => setDest_(sid, mid, { situacion_actual: 'no_cursa_por_tope', motivo_no_cursa: 'No cursa por tope 12 (exceso de adeudadas)' }));
 
-    // Revisión manual: si dejamos alguna "nunca cursada" por tope o si sobran adeudadas
     if (droppedNew.length > 0 || overflowOwed.length > 0) revisionManualCount++;
   });
 
