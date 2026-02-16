@@ -348,30 +348,51 @@ function rolloverCycle_(payload) {
     const isApproved = (mid) => !!approvedEver[sid + '|' + mid];
     const everRegular = (mid) => !!regularEver[sid + '|' + mid];
 
-    // Materias del nuevo año (1ra vez) — priorizamos hasta 12
-    const matsNuevoAnio = catalog.filter(m => Number(m.anio||0) === anioNuevo && !isApproved(m.id_materia)).sort(byName);
-    const matsNuevoRegular = matsNuevoAnio.slice(0, 12);
-    const matsNuevoOverflow = matsNuevoAnio.slice(12);
+    // Materias del nuevo año (1ra vez)
+    const matsNuevoAnio = catalog
+      .filter(m => Number(m.anio||0) === anioNuevo && !isApproved(m.id_materia))
+      .sort(byName);
 
     // Adeudadas (años anteriores al nuevo año)
-    const adeudadas = catalog.filter(m => Number(m.anio||0) < anioNuevo && !isApproved(m.id_materia)).sort(byAnioDescName);
+    const adeudadas = catalog
+      .filter(m => Number(m.anio||0) < anioNuevo && !isApproved(m.id_materia))
+      .sort(byAnioDescName);
 
     let intensifica = [];
     let recursa = [];
     let tope = [];
 
+    let matsNuevoRegular = [];
+    let matsNuevoOverflow = [];
+
+    // Intensifica: hasta 4 adeudadas (no cuenta dentro de las 12)
     if (adeudadas.length <= 4) {
       intensifica = adeudadas.slice();
     } else {
       intensifica = adeudadas.slice(0, 4);
-      const rem = adeudadas.slice(4);
-      const slots = Math.max(0, 12 - matsNuevoRegular.length); // (cursa 1ra vez + recursa) = 12
-      recursa = rem.slice(0, slots);
-      tope = rem.slice(slots);
     }
 
-    // Si el propio nuevo año excede 12, lo que no entra va a tope también
-    tope = tope.concat(matsNuevoOverflow);
+    const recursaCandidates = (adeudadas.length > 4) ? adeudadas.slice(4) : [];
+
+    // Prioridad cuando (adeudas + 1ra vez) supera 12:
+    // - Si pasa a 6to: prioriza todas las de 6to (1ra vez) y completa con recursadas.
+    // - Si está en otros años: prioriza recursadas y deja sin cursar por tope las del año actual.
+    if (anioNuevo === 6) {
+      matsNuevoRegular = matsNuevoAnio.slice(0, 12);
+      matsNuevoOverflow = matsNuevoAnio.slice(12);
+
+      const slots = Math.max(0, 12 - matsNuevoRegular.length);
+      recursa = recursaCandidates.slice(0, slots);
+      tope = recursaCandidates.slice(slots).concat(matsNuevoOverflow);
+    } else {
+      recursa = recursaCandidates.slice(0, 12);
+
+      const slots = Math.max(0, 12 - recursa.length);
+      matsNuevoRegular = matsNuevoAnio.slice(0, slots);
+      matsNuevoOverflow = matsNuevoAnio.slice(slots);
+
+      tope = recursaCandidates.slice(12).concat(matsNuevoOverflow);
+    }
 
     if (tope.length > 0) rosadoStudents.add(sid);
 

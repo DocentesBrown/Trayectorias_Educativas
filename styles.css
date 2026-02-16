@@ -330,3 +330,40 @@ body{
   color: var(--muted);
   cursor: not-allowed;
 }
+
+
+/* Students list markers */
+.row.between{justify-content:space-between}
+.btn.mini{
+  padding: 7px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+.item.closed{
+  background: rgba(15, 23, 42, 0.04);
+  border-color: rgba(15, 23, 42, 0.18);
+  opacity: 0.75;
+}
+.item.review{
+  background: rgba(218,104,99,0.10);
+  border-color: rgba(218,104,99,0.45);
+}
+.item.review .title{color: #7a1d16}
+
+/* Close modal choice buttons */
+.choicebox{display:flex; gap:8px; flex-wrap:wrap}
+.choice{
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  cursor:pointer;
+  font-weight: 900;
+  font-size: 12px;
+}
+.choice.on{
+  background: rgba(36,73,110,0.10);
+  border-color: rgba(36,73,110,0.30);
+  color: var(--blue);
+}
