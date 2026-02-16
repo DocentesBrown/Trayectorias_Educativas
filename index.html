@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trayectorias · Secundaria</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="dot"></div>
+      <div>
+        <div class="brand-title">TRAYECTORIAS</div>
+        <div class="brand-sub">Seguimiento anual · 12 (regular) + 4 (intensificación)</div>
+      </div>
+    </div>
+
+    <div class="top-actions">
+      <select id="cicloSelect" class="input small">
+        <option value="2026">2026</option>
+        <option value="2025">2025</option>
+        <option value="2024">2024</option>
+      </select>
+      <button id="btnRefresh" class="btn ghost">Actualizar</button>
+      <button id="btnLogout" class="btn ghost">Cambiar clave</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Gate API key -->
+    <section id="gate" class="card gate">
+      <h1>Ingresá la clave de acceso</h1>
+      <p class="muted">
+        Esta clave (API Key) se genera desde la planilla en Apps Script y se guarda en tu navegador.
+      </p>
+      <div class="row">
+        <input id="apiKeyInput" class="input" placeholder="Pegá la API Key acá" />
+        <button id="btnSaveKey" class="btn primary">Entrar</button>
+      </div>
+      <div id="gateMsg" class="msg"></div>
+    </section>
+
+    <!-- App -->
+    <section id="app" class="grid hidden">
+      <!-- Left: students -->
+      <aside class="card">
+        <div class="aside-head">
+          <h2>Estudiantes</h2>
+          <input id="studentSearch" class="input" placeholder="Buscar por nombre, división o ID…" />
+        </div>
+        <div id="studentsList" class="list"></div>
+      </aside>
+
+      <!-- Right: student details -->
+      <section class="card">
+        <div class="student-head">
+          <div>
+            <h2 id="studentName">Seleccioná un/a estudiante</h2>
+            <div id="studentMeta" class="muted"></div>
+          </div>
+          <div class="head-actions">
+            <button id="btnSync" class="btn">Agregar materias faltantes</button>
+            <button id="btnSave" class="btn primary" disabled>Guardar cambios</button>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-label">Regular</div>
+            <div class="stat-value"><span id="regularCount">0</span>/12</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Intensificación</div>
+            <div class="stat-value"><span id="intCount">0</span>/4</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Adeudadas</div>
+            <div class="stat-value" id="adeudaCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Aprobadas</div>
+            <div class="stat-value" id="aprobadaCount">0</div>
+          </div>
+        </div>
+
+        <div id="ruleAlerts" class="alerts"></div>
+
+        <div class="tabs">
+          <button class="tab active" data-tab="panel">Panel</button>
+          <button class="tab" data-tab="editor">Editor plan anual</button>
+          <button class="tab" data-tab="familia">Mensaje a familia</button>
+        </div>
+
+        <div id="tab-panel" class="tabcontent">
+          <div class="cols">
+            <div class="col">
+              <h3>✅ Aprobadas</h3>
+              <div id="listAprobadas" class="pilllist"></div>
+            </div>
+            <div class="col">
+              <h3>❌ Adeudadas</h3>
+              <div id="listAdeudadas" class="pilllist"></div>
+            </div>
+          </div>
+
+          <div class="cols">
+            <div class="col">
+              <h3>📘 Cursa 1ra vez</h3>
+              <div id="listPrimera" class="pilllist"></div>
+            </div>
+            <div class="col">
+              <h3>🔁 Recursa</h3>
+              <div id="listRecursa" class="pilllist"></div>
+            </div>
+          </div>
+
+          <div class="cols">
+            <div class="col">
+              <h3>⚡ Intensifica</h3>
+              <div id="listIntensifica" class="pilllist"></div>
+            </div>
+            <div class="col">
+              <h3>⛔ Atraso por tope</h3>
+              <div id="listAtraso" class="pilllist"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="tab-editor" class="tabcontent hidden">
+          <div class="editor-head">
+            <p class="muted">
+              Elegí la situación actual de cada materia. La app valida: <b>12</b> regular (1ra vez + recursa) y <b>4</b> intensificación (no cuenta en las 12).
+              En caso de exceso de 12, la normativa prioriza materias <b>nunca cursadas</b>.
+            </p>
+            <button id="btnAutoAdjust" class="btn ghost">Ajuste automático (prioridad nunca cursadas)</button>
+          </div>
+
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Materia</th>
+                  <th>Año</th>
+                  <th>Troncal</th>
+                  <th>Condición</th>
+                  <th>Nunca cursada</th>
+                  <th>Situación actual</th>
+                </tr>
+              </thead>
+              <tbody id="materiasTbody"></tbody>
+            </table>
+          </div>
+          <div id="saveMsg" class="msg"></div>
+        </div>
+
+        <div id="tab-familia" class="tabcontent hidden">
+          <p class="muted">Texto sugerido (se genera desde los datos cargados). Podés editarlo antes de copiar.</p>
+          <textarea id="familyText" class="textarea" rows="10"></textarea>
+          <div class="row end">
+            <button id="btnCopyFamily" class="btn">Copiar</button>
+          </div>
+          <div id="copyMsg" class="msg"></div>
+        </div>
+
+      </section>
+    </section>
+  </main>
+
+  <footer class="footer muted">
+    Hecho para seguimiento de trayectorias · GitHub Pages + Google Sheets
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
