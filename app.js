@@ -7,7 +7,7 @@ const SITUACIONES = [
   { value: 'cursa_primera_vez', label: 'Cursa 1ra vez (regular)' },
   { value: 'recursa', label: 'Recursa (regular)' },
   { value: 'intensifica', label: 'Intensifica' },
-  { value: 'no_cursa_por_edad', label: 'No cursa por edad' },
+  { value: 'proximos_anos', label: 'Próximos años' },
   { value: 'no_cursa_por_tope', label: 'No cursa por tope (atraso)' },
   { value: 'no_cursa_otro_motivo', label: 'No cursa (otro)' }
 ];
@@ -20,6 +20,32 @@ const CIERRE_RESULTADOS = [
 
 
 const $ = (id) => document.getElementById(id);
+
+// UI helpers
+function setBtnLoading(btn, loading, textLoading) {
+  if (!btn) return;
+  if (loading) {
+    if (!btn.dataset.origText) btn.dataset.origText = btn.textContent;
+    btn.disabled = true;
+    const t = textLoading || 'Procesando…';
+    btn.innerHTML = `<span class="spinner" aria-hidden="true"></span>${t}`;
+    btn.classList.add('is-loading');
+  } else {
+    btn.disabled = false;
+    const orig = btn.dataset.origText || btn.textContent;
+    btn.textContent = orig;
+    btn.classList.remove('is-loading');
+  }
+}
+
+function toast(msg, type = 'ok') {
+  const el = $('toast');
+  if (!el) return alert(msg);
+  el.textContent = msg;
+  el.className = `toast show ${type}`;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { el.className = 'toast'; el.textContent = ''; }, 2200);
+}
 
 let state = {
   apiKey: null,
@@ -568,7 +594,7 @@ async function saveChangesFromCierreModal() {
     updates.push({ id_materia, fields });
   }
 
-  $('btnSaveCierre').disabled = true;
+  setBtnLoading($('btnSaveCierre'), true, 'Guardando…');
   setMessage('cierreMsg', 'Guardando…', '');
 
   try {
@@ -598,16 +624,13 @@ async function saveChangesFromCierreModal() {
     await loadDivisionSummary(); // actualiza panel de riesgo
     renderCierreModal();
 
-    setMessage('cierreMsg', 'Guardado ✅', 'ok');
-
-    // Si ya está completo, cerramos modal (opcional)
-    const { faltan, total } = cierreProgress_();
-    if (total && faltan === 0) {
-      setTimeout(() => setModalVisible('modalCierre', false), 250);
-    }
+    setMessage('cierreMsg', 'Materias actualizadas ✅', 'ok');
+    toast('Materias actualizadas ✅', 'ok');
+    setTimeout(() => setModalVisible('modalCierre', false), 250);
+    setBtnLoading($('btnSaveCierre'), false);
   } catch (err) {
     setMessage('cierreMsg', 'Error al guardar: ' + err.message, 'err');
-    $('btnSaveCierre').disabled = false;
+    setBtnLoading($('btnSaveCierre'), false);
   }
 }
 
@@ -770,12 +793,20 @@ function wireEvents() {
   $('btnDivisionSummary').onclick = async () => {
   if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
   setModalVisible('modalSummary', true);
-  await loadDivisionSummary();
+  setBtnLoading($('btnDivisionSummary'), true, 'Cargando…');
+  try {
+    await loadDivisionSummary();
+  } finally {
+    setBtnLoading($('btnDivisionSummary'), false);
+  }
 };
 
 $('btnCloseSummary').onclick = () => setModalVisible('modalSummary', false);
 $('modalSummaryBackdrop').onclick = () => setModalVisible('modalSummary', false);
-$('btnRefreshSummary').onclick = loadDivisionSummary;
+$('btnRefreshSummary').onclick = async () => {
+  setBtnLoading($('btnRefreshSummary'), true, 'Actualizando…');
+  try { await loadDivisionSummary(); } finally { setBtnLoading($('btnRefreshSummary'), false); }
+};
 
 // Modal cierre por estudiante
 $('btnCloseCierre').onclick = () => setModalVisible('modalCierre', false);
@@ -784,9 +815,14 @@ $('btnSaveCierre').onclick = saveChangesFromCierreModal;
 
 $('btnRefresh').onclick = async () => {
   if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
-  await loadCycles();
-  await loadStudents();
-  if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
+  setBtnLoading($('btnRefresh'), true, 'Actualizando…');
+  try {
+    await loadCycles();
+    await loadStudents();
+    if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
+  } finally {
+    setBtnLoading($('btnRefresh'), false);
+  }
 };
 
 $('btnRollover').onclick = async () => {
@@ -816,6 +852,7 @@ $('btnRollover').onclick = async () => {
   if (!ok) return;
 
     try {
+    setBtnLoading($('btnRollover'), true, 'Creando ciclo…');
     const res = await apiCall('rolloverCycle', { ciclo_origen: origen, ciclo_destino: destino, usuario: 'web', update_students: true, update_division: true });
     alert(
       `Rollover listo ✅
@@ -838,8 +875,11 @@ $('btnRollover').onclick = async () => {
     state.ciclo = destino;
 
     if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
-  } catch (err) {
+  }
+  catch (err) {
     alert('Error: ' + err.message);
+  } finally {
+    setBtnLoading($('btnRollover'), false);
   }
 };
 

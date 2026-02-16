@@ -383,10 +383,12 @@ function rolloverCycle_(payload) {
 
   // Mapas auxiliares
   const activeSet = {};
+  const oldYearByStudent = {};
   const newGradeByStudent = {};
   students.forEach(s => {
     activeSet[s.id_estudiante] = true;
     const oldYear = Number(s.anio_actual || '');
+    oldYearByStudent[s.id_estudiante] = (!isNaN(oldYear) && oldYear > 0) ? Math.min(oldYear, 6) : null;
     newGradeByStudent[s.id_estudiante] = (!isNaN(oldYear) && oldYear > 0) ? Math.min(oldYear + 1, 6) : null;
   });
 
@@ -402,23 +404,36 @@ function rolloverCycle_(payload) {
   });
 
   // Adeudadas del ciclo origen (solo si existe)
+  // Solo cuentan adeudadas de años que el/la estudiante ya debía haber cursado en el ciclo origen
+  // (evita que materias de años futuros se consideren “adeudadas”).
   const owedByStudent = {};
   if (origenExiste) {
     rows.forEach(r => {
       const c = String(r[idx['ciclo_lectivo']] || '').trim();
       if (c !== origen) return;
+
       const sid = String(r[idx['id_estudiante']] || '').trim();
       if (!activeSet[sid]) return;
+
       const mid = String(r[idx['id_materia']] || '').trim();
+      if (!mid) return;
+
       const cond = String(r[idx['condicion_academica']] || '').trim().toLowerCase();
-      if (cond === 'adeuda') {
-        if (!owedByStudent[sid]) owedByStudent[sid] = [];
-        owedByStudent[sid].push(mid);
-      }
+      if (cond !== 'adeuda') return;
+
+      const oldYear = oldYearByStudent[sid];
+      const matYear = catalogYearByMid[mid] || null;
+
+      // Si no tenemos año de la materia, la dejamos contar (mejor no ocultar adeudas reales)
+      const isFutureInOrigen = (oldYear && matYear && matYear > oldYear);
+      if (isFutureInOrigen) return;
+
+      if (!owedByStudent[sid]) owedByStudent[sid] = [];
+      owedByStudent[sid].push(mid);
     });
   }
 
-  // Map row index (destino) for fast updates
+// Map row index (destino) for fast updates
   const destRowIndex = {}; // sid|mid -> i
   rows.forEach((r, i) => {
     const c = String(r[idx['ciclo_lectivo']] || '').trim();
@@ -431,7 +446,7 @@ function rolloverCycle_(payload) {
   });
 
   // Primero: resetear campos del destino para estudiantes activos (para evitar basura previa)
-  // Además: materias de años FUTUROS quedan como "no_cursa_por_edad".
+  // Además: materias de años FUTUROS quedan como "proximos_anos".
   rows.forEach((r, i) => {
     const c = String(r[idx['ciclo_lectivo']] || '').trim();
     if (c !== destino) return;
@@ -445,8 +460,8 @@ function rolloverCycle_(payload) {
     const matYear = catalogYearByMid[mid] || null;
     const isFuture = (newYear && matYear && matYear > newYear);
 
-    if (idx['situacion_actual'] !== undefined) r[idx['situacion_actual']] = isFuture ? 'no_cursa_por_edad' : 'no_cursa_otro_motivo';
-    if (idx['motivo_no_cursa'] !== undefined) r[idx['motivo_no_cursa']] = isFuture ? 'No cursa por edad (aún no corresponde)' : '';
+    if (idx['situacion_actual'] !== undefined) r[idx['situacion_actual']] = isFuture ? 'proximos_anos' : 'no_cursa_otro_motivo';
+    if (idx['motivo_no_cursa'] !== undefined) r[idx['motivo_no_cursa']] = isFuture ? 'Próximos años (aún no corresponde)' : '';
     if (idx['resultado_cierre'] !== undefined) r[idx['resultado_cierre']] = '';
     if (idx['ciclo_cerrado'] !== undefined) r[idx['ciclo_cerrado']] = false;
     if (idx['fecha_actualizacion'] !== undefined) r[idx['fecha_actualizacion']] = now;
@@ -629,7 +644,7 @@ function getStudentList_(payload) {
     // Conteo de adeudadas para filtro "en riesgo" (impacta aunque aún no se haya ejecutado cierre global)
     const resLc = String(res || '').trim().toLowerCase();
     const isAdeuda = (cond === 'adeuda') || (resLc === 'no_aprobada' || resLc === 'no aprobada' || resLc === 'no_aprobo' || resLc === 'no' );
-    if (isAdeuda && sit !== 'no_cursa_por_edad') adeudaCount[sid] = (adeudaCount[sid] || 0) + 1;
+    if (isAdeuda && sit !== 'proximos_anos') adeudaCount[sid] = (adeudaCount[sid] || 0) + 1;
 
     // Materias a cerrar: las que cursó/recursó/intensificó en este ciclo
     if (sit === 'cursa_primera_vez' || sit === 'recursa' || sit === 'intensifica') {
