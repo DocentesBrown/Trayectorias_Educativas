@@ -11,13 +11,6 @@ const SITUACIONES = [
   { value: 'no_cursa_otro_motivo', label: 'No cursa (otro)' }
 ];
 
-const CIERRE_RESULTADOS = [
-  { value: '', label: '—' },
-  { value: 'aprobada', label: 'Aprobó' },
-  { value: 'no_aprobada', label: 'No aprobó' }
-];
-
-
 const $ = (id) => document.getElementById(id);
 
 let state = {
@@ -26,8 +19,9 @@ let state = {
   students: [],
   selectedStudentId: null,
   studentData: null,
-  originalByMateria: new Map(), // id_materia -> snapshot
-  dirtyByMateria: new Map()     // id_materia -> fields changed
+  originalByMateria: new Map(),
+  dirtyByMateria: new Map(),
+  trabajados: new Set() // IDs de estudiantes ya trabajados en el ciclo actual
 };
 
 function backendUrl() {
@@ -46,7 +40,6 @@ async function apiCall(action, payload) {
   const res = await fetch(backendUrl(), {
     method: 'POST',
     body
-    // No ponemos headers para evitar preflight CORS
   });
 
   const text = await res.text();
@@ -75,10 +68,16 @@ function renderStudents(list) {
 
   filtered.forEach(s => {
     const div = document.createElement('div');
-    div.className = 'item' + (state.selectedStudentId === s.id_estudiante ? ' active' : '');
+    div.className = 'item' + 
+      (state.selectedStudentId === s.id_estudiante ? ' active' : '') +
+      (state.trabajados.has(s.id_estudiante) ? ' trabajado' : '') +
+      (s.tiene_problema ? ' problema' : '');
+    
     div.innerHTML = `
       <div class="title">${escapeHtml(`${s.apellido}, ${s.nombre}`)}</div>
-      <div class="sub">${escapeHtml(`${s.division || ''} · ${s.turno || ''} · ID: ${s.id_estudiante}`)}</div>
+      <div class="sub">${escapeHtml(`${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || ''} · ID: ${s.id_estudiante}`)}</div>
+      ${s.tiene_problema ? '<div class="problema-badge">⚠️ Requiere revisión</div>' : ''}
+      ${state.trabajados.has(s.id_estudiante) ? '<div class="trabajado-badge">✅ Trabajado</div>' : ''}
     `;
     div.onclick = () => selectStudent(s.id_estudiante);
     el.appendChild(div);
@@ -161,8 +160,6 @@ function renderAlerts(materias) {
   if (regular > 12) alerts.push(`Te pasaste del tope: cursada regular = ${regular}/12. La normativa prioriza “nunca cursadas”.`);
   if (intens > 4) alerts.push(`Te pasaste del tope: intensificación = ${intens}/4.`);
 
-  // Regla de prioridad: si regular > 12 y hay recursas mientras hay nunca_cursadas afuera,
-  // la app sugiere usar auto-ajuste (sin inventar).
   const neverFirst = materias.filter(m => !!m.nunca_cursada);
   if (regular > 12 && neverFirst.length > 0) {
     alerts.push('Sugerencia: usá “Ajuste automático” para respetar prioridad de materias nunca cursadas.');
@@ -182,7 +179,6 @@ function renderStudent(data) {
   state.studentData = data;
   state.originalByMateria.clear();
   state.dirtyByMateria.clear();
-  $('btnSave').disabled = true;
 
   const s = data.estudiante || {};
   $('studentName').textContent = s.apellido ? `${s.apellido}, ${s.nombre}` : (s.nombre || s.id_estudiante || 'Estudiante');
@@ -191,12 +187,10 @@ function renderStudent(data) {
 
   const materias = (data.materias || []).slice();
 
-  // snapshot original
   materias.forEach(m => {
     state.originalByMateria.set(m.id_materia, JSON.parse(JSON.stringify(m)));
   });
 
-  // stats & buckets
   const b = computeBuckets(materias);
   const c = counts(materias);
 
@@ -283,40 +277,14 @@ function renderEditorTable(materias) {
       };
     }
 
-    const selCierre = document.createElement('select');
-    selCierre.className = 'select';
-
-    if (isAprobada) {
-      selCierre.disabled = true;
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = '— (aprobada)';
-      opt.selected = true;
-      selCierre.appendChild(opt);
-    } else {
-      CIERRE_RESULTADOS.forEach(o => {
-        const opt = document.createElement('option');
-        opt.value = o.value;
-        opt.textContent = o.label;
-        if ((m.resultado_cierre || '') === o.value) opt.selected = true;
-        selCierre.appendChild(opt);
-      });
-
-      selCierre.onchange = () => {
-        setMateriaField(m.id_materia, 'resultado_cierre', selCierre.value);
-      };
-    }
-
     tr.innerHTML = `
       <td>${escapeHtml(m.nombre || m.id_materia)} <div class="muted">${escapeHtml(m.id_materia)}</div></td>
       <td>${escapeHtml(m.anio || '')}</td>
       <td>${condicion}</td>
       <td>${nunca}</td>
       <td></td>
-      <td></td>
     `;
     tr.children[4].appendChild(sel);
-    tr.children[5].appendChild(selCierre);
     tbody.appendChild(tr);
   });
 }
@@ -343,7 +311,6 @@ function setMateriaField(id_materia, field, value) {
 
   $('btnSave').disabled = state.dirtyByMateria.size === 0;
 
-  // Re-render counters & alerts (sin recalcular todo el panel completo para no molestar)
   const c = counts(materias);
   $('regularCount').textContent = String(c.regular);
   $('intCount').textContent = String(c.intens);
@@ -355,18 +322,14 @@ function autoAdjustTope() {
   if (!state.studentData) return;
   const materias = state.studentData.materias || [];
 
-  // Regular list
   const regular = materias.filter(m => m.situacion_actual === 'cursa_primera_vez' || m.situacion_actual === 'recursa');
   if (regular.length <= 12) return;
 
-  // Keep all "cursa_primera_vez" (prioridad nunca cursadas)
-  // If still > 12 (very rare), then drop from the end by año desc (dejar las más prioritarias).
   const primera = regular.filter(m => m.situacion_actual === 'cursa_primera_vez');
   const recursa = regular.filter(m => m.situacion_actual === 'recursa');
 
-  // Step 1: move recursas to atraso until total <= 12
   let total = primera.length + recursa.length;
-  const recursaSorted = recursa.slice().sort((a,b) => (b.anio||0)-(a.anio||0)); // mover primero las de años más altos si hay que recortar
+  const recursaSorted = recursa.slice().sort((a,b) => (b.anio||0)-(a.anio||0));
   let moved = 0;
 
   while (total > 12 && recursaSorted.length > 0) {
@@ -376,11 +339,10 @@ function autoAdjustTope() {
     moved++;
   }
 
-  // Step 2: if still > 12, we must also move some de primera vez (pero avisamos con alerta)
   if (total > 12) {
     const primeraSorted = primera.slice().sort((a,b) => (b.anio||0)-(a.anio||0));
     while (total > 12 && primeraSorted.length > 0) {
-      const m = primeraSorted.pop(); // mover las de menor prioridad (años menores) al final
+      const m = primeraSorted.pop();
       setMateriaField(m.id_materia, 'situacion_actual', 'no_cursa_por_tope');
       total--;
       moved++;
@@ -389,8 +351,6 @@ function autoAdjustTope() {
 
   setMessage('saveMsg', moved ? `Ajuste aplicado: se movieron ${moved} materias a “No cursa por tope”.` : 'No hizo falta ajustar.', moved ? 'ok' : '');
 }
-
-
 
 function setModalVisible(modalId, visible) {
   const el = $(modalId);
@@ -432,32 +392,6 @@ async function loadDivisionSummary() {
   }
 }
 
-async function closeCycleForStudent() {
-  if (!state.selectedStudentId) return alert('Seleccioná un/a estudiante.');
-  const ok = confirm('Esto aplicará el “cierre” a la condición académica (APROBADA/ADEUDA) según la columna “Cierre: aprobó”.\n\n¿Continuar?');
-  if (!ok) return;
-
-  $('btnCloseStudent').disabled = true;
-  setMessage('saveMsg', 'Aplicando cierre…', '');
-
-  try {
-    const res = await apiCall('closeCycle', {
-      ciclo_lectivo: state.ciclo,
-      id_estudiante: state.selectedStudentId,
-      usuario: 'web',
-      marcar_cerrado: true
-    });
-
-    const status = res.data.status;
-    if (status) renderStudent(status);
-    setMessage('saveMsg', `Cierre aplicado ✅ (filas actualizadas: ${res.data.filas_actualizadas || 0})`, 'ok');
-  } catch (err) {
-    setMessage('saveMsg', 'Error al cerrar ciclo: ' + err.message, 'err');
-  } finally {
-    $('btnCloseStudent').disabled = false;
-  }
-}
-
 function renderCycles(cycles) {
   const sel = $('cicloSelect');
   const current = state.ciclo || sel.value;
@@ -469,7 +403,6 @@ function renderCycles(cycles) {
     sel.appendChild(opt);
   });
 
-  // Mantener selección si existe; si no, usar el primer ciclo disponible
   if (cycles && cycles.includes(current)) {
     sel.value = current;
     state.ciclo = current;
@@ -477,7 +410,6 @@ function renderCycles(cycles) {
     sel.value = cycles[0];
     state.ciclo = cycles[0];
   } else {
-    // fallback
     state.ciclo = sel.value || '2026';
   }
 }
@@ -492,7 +424,21 @@ async function loadCycles() {
 async function loadStudents() {
   const data = await apiCall('getStudentList', {});
   state.students = data.students || [];
+  
+  // Cargar estado de estudiantes trabajados
+  await loadTrabajados();
+  
   renderStudents(state.students);
+}
+
+async function loadTrabajados() {
+  try {
+    const data = await apiCall('getTrabajados', { ciclo_lectivo: state.ciclo });
+    state.trabajados = new Set(data.trabajados || []);
+  } catch (err) {
+    console.error('Error cargando estudiantes trabajados:', err);
+    state.trabajados = new Set();
+  }
 }
 
 async function selectStudent(id) {
@@ -555,6 +501,167 @@ async function syncCatalogRows() {
   }
 }
 
+// Nueva función para abrir el modal de evaluación de materias
+function openEvaluacionModal() {
+  if (!state.selectedStudentId || !state.studentData) return;
+  
+  const materias = state.studentData.materias || [];
+  const materiasAEvaluar = materias.filter(m => 
+    m.situacion_actual === 'cursa_primera_vez' || 
+    m.situacion_actual === 'recursa' || 
+    m.situacion_actual === 'intensifica'
+  );
+
+  if (materiasAEvaluar.length === 0) {
+    alert('No hay materias para evaluar (cursando, recursando o intensificando).');
+    return;
+  }
+
+  renderEvaluacionMaterias(materiasAEvaluar);
+  setModalVisible('modalEvaluacion', true);
+}
+
+function renderEvaluacionMaterias(materias) {
+  const tbody = $('evaluacionTbody');
+  tbody.innerHTML = '';
+
+  materias.sort((a, b) => (a.anio || 0) - (b.anio || 0) || a.nombre.localeCompare(b.nombre));
+
+  materias.forEach(m => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(m.nombre || m.id_materia)}</td>
+      <td>${escapeHtml(m.anio || '')}</td>
+      <td>${escapeHtml(m.situacion_actual || '')}</td>
+      <td>
+        <select class="select evaluacion-select" data-materia-id="${escapeHtml(m.id_materia)}">
+          <option value="">— Seleccionar —</option>
+          <option value="aprobada">✅ Aprobó</option>
+          <option value="no_aprobada">❌ No aprobó</option>
+        </select>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function guardarEvaluacion() {
+  const selects = document.querySelectorAll('.evaluacion-select');
+  const updates = [];
+  const materiasAprobadas = [];
+
+  selects.forEach(select => {
+    const materiaId = select.dataset.materiaId;
+    const resultado = select.value;
+    
+    if (resultado) {
+      updates.push({
+        id_materia: materiaId,
+        fields: {
+          resultado_cierre: resultado,
+          condicion_academica: resultado === 'aprobada' ? 'aprobada' : 'adeuda'
+        }
+      });
+      if (resultado === 'aprobada') {
+        materiasAprobadas.push(materiaId);
+      }
+    }
+  });
+
+  if (updates.length === 0) {
+    alert('No seleccionaste ningún resultado.');
+    return;
+  }
+
+  try {
+    const payload = {
+      ciclo_lectivo: state.ciclo,
+      id_estudiante: state.selectedStudentId,
+      usuario: 'web',
+      updates
+    };
+    
+    await apiCall('saveStudentStatus', payload);
+    
+    // Marcar como trabajado
+    await apiCall('marcarTrabajado', {
+      ciclo_lectivo: state.ciclo,
+      id_estudiante: state.selectedStudentId
+    });
+    
+    state.trabajados.add(state.selectedStudentId);
+    
+    setModalVisible('modalEvaluacion', false);
+    
+    // Recargar datos del estudiante
+    const data = await apiCall('getStudentStatus', { 
+      ciclo_lectivo: state.ciclo, 
+      id_estudiante: state.selectedStudentId 
+    });
+    renderStudent(data.data);
+    renderStudents(state.students);
+    
+    alert(`✅ Evaluación guardada. ${materiasAprobadas.length} materias aprobadas.`);
+  } catch (err) {
+    alert('Error al guardar: ' + err.message);
+  }
+}
+
+// Nueva función para rollover con lógica mejorada
+async function nuevoRollover() {
+  if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
+
+  const origen = (prompt('Año origen (ej. 2026):', state.ciclo) || '').trim();
+  if (!origen) return;
+
+  let sugerido = '';
+  const n = Number(origen);
+  if (!isNaN(n)) sugerido = String(n + 1);
+
+  const destino = (prompt('Año destino (ej. 2027):', sugerido) || '').trim();
+  if (!destino) return;
+
+  if (destino === origen) return alert('El año destino no puede ser igual al origen.');
+
+  const ok = confirm(
+    `Esto va a crear el ciclo ${destino} con la siguiente lógica automática:\n\n` +
+    `• Aumenta año del estudiante en +1\n` +
+    `• Respeta lo aprobado/no aprobado del año actual\n` +
+    `• Materias del nuevo año: "Cursa por 1ra vez"\n` +
+    `• Hasta 4 materias adeudadas → Intensificación\n` +
+    `• Resto de adeudadas → Recursa (hasta 12 total)\n` +
+    `• Si excede 12, ajusta con "no cursa por tope"\n\n` +
+    `¿Continuar?`
+  );
+  if (!ok) return;
+
+  try {
+    const res = await apiCall('rolloverCycleV2', { 
+      ciclo_origen: origen, 
+      ciclo_destino: destino, 
+      usuario: 'web' 
+    });
+    
+    alert(
+      `Rollover completado ✅\n\n` +
+      `Origen: ${res.data.ciclo_origen}\n` +
+      `Destino: ${res.data.ciclo_destino}\n` +
+      `Estudiantes procesados: ${res.data.estudiantes_procesados}\n` +
+      `Materias creadas: ${res.data.filas_creadas}\n` +
+      `Estudiantes con problemas: ${res.data.estudiantes_con_problemas}\n\n` +
+      `Los estudiantes con problemas aparecerán en ROSADO para revisión manual.`
+    );
+
+    await loadCycles();
+    $('cicloSelect').value = destino;
+    state.ciclo = destino;
+    await loadStudents();
+
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
 function wireTabs() {
   const tabs = document.querySelectorAll('.tab');
   tabs.forEach(t => {
@@ -597,89 +704,44 @@ function wireEvents() {
   };
 
   $('btnDivisionSummary').onclick = async () => {
-  if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
-  setModalVisible('modalSummary', true);
-  await loadDivisionSummary();
-};
+    if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
+    setModalVisible('modalSummary', true);
+    await loadDivisionSummary();
+  };
 
-$('btnCloseSummary').onclick = () => setModalVisible('modalSummary', false);
-$('modalSummaryBackdrop').onclick = () => setModalVisible('modalSummary', false);
-$('btnRefreshSummary').onclick = loadDivisionSummary;
+  $('btnCloseSummary').onclick = () => setModalVisible('modalSummary', false);
+  $('modalSummaryBackdrop').onclick = () => setModalVisible('modalSummary', false);
+  $('btnRefreshSummary').onclick = loadDivisionSummary;
 
-$('btnRefresh').onclick = async () => {
-  if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
-  await loadCycles();
-  await loadStudents();
-  if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
-};
-
-$('btnRollover').onclick = async () => {
-  if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
-
-  const origen = (prompt('Año origen (ej. 2026):', state.ciclo) || '').trim();
-  if (!origen) return;
-
-  let sugerido = '';
-  const n = Number(origen);
-  if (!isNaN(n)) sugerido = String(n + 1);
-
-  const destino = (prompt('Año destino (ej. 2027):', sugerido) || '').trim();
-  if (!destino) return;
-
-  if (destino === origen) return alert('El año destino no puede ser igual al origen.');
-
-  const ok = confirm(
-    `Esto va a crear (si no existen) filas en EstadoPorCiclo para el ciclo ${destino}, ` +
-    `para TODOS los estudiantes activos y TODAS las materias del catálogo.
-
-` +
-    `No borra ni modifica ciclos anteriores.
-
-¿Continuar?`
-  );
-  if (!ok) return;
-
-  const promo = confirm('¿También querés promocionar automáticamente en la pestaña Estudiantes?\n\nOK = Sí (anio_actual +1 y ajusta división si se puede)\nCancelar = No');
-
-  try {
-    const res = await apiCall('rolloverCycle', { ciclo_origen: origen, ciclo_destino: destino, usuario: 'web', update_students: promo, update_division: true });
-    alert(
-      `Rollover listo ✅
-
-` +
-      `Origen: ${res.data.ciclo_origen} (existe: ${res.data.origen_existe})
-` +
-      `Destino: ${res.data.ciclo_destino}
-` +
-      `Filas creadas: ${res.data.filas_creadas}
-` +
-      `Omitidas (ya existían): ${res.data.filas_omitidas_ya_existian}
-` +
-      (res.data.estudiantes_promovidos ? `Estudiantes promovidos: ${res.data.estudiantes_promovidos}\nDivisiones actualizadas: ${res.data.divisiones_actualizadas}` : 'Estudiantes promovidos: 0')
-    );
-
+  $('btnRefresh').onclick = async () => {
+    if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
     await loadCycles();
-    $('cicloSelect').value = destino;
-    state.ciclo = destino;
-
+    await loadStudents();
     if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
-  } catch (err) {
-    alert('Error: ' + err.message);
-  }
-};
+  };
 
-$('studentSearch').oninput = () => renderStudents(state.students);
+  $('btnRollover').onclick = nuevoRollover;
+
+  $('studentSearch').oninput = () => renderStudents(state.students);
 
   $('cicloSelect').onchange = async () => {
     state.ciclo = $('cicloSelect').value;
+    await loadTrabajados();
     if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
+    renderStudents(state.students);
   };
 
   $('btnSave').onclick = saveChanges;
   $('btnSync').onclick = syncCatalogRows;
-
   $('btnAutoAdjust').onclick = autoAdjustTope;
-  $('btnCloseStudent').onclick = closeCycleForStudent;
+  
+  // Nuevo botón de evaluación
+  $('btnEvaluarMaterias').onclick = openEvaluacionModal;
+  
+  // Botones del modal de evaluación
+  $('btnGuardarEvaluacion').onclick = guardarEvaluacion;
+  $('btnCancelarEvaluacion').onclick = () => setModalVisible('modalEvaluacion', false);
+  $('modalEvaluacionBackdrop').onclick = () => setModalVisible('modalEvaluacion', false);
 
   $('btnCopyFamily').onclick = async () => {
     try {
@@ -696,7 +758,6 @@ async function init() {
   wireTabs();
   wireEvents();
 
-  // ciclo default
   state.ciclo = $('cicloSelect').value;
 
   const saved = localStorage.getItem(LS_KEY);
@@ -708,7 +769,6 @@ async function init() {
       await loadCycles();
       await loadStudents();
     } catch {
-      // clave vieja o backend mal
       setGateVisible(true);
     }
   } else {
