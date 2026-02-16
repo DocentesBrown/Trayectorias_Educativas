@@ -300,3 +300,39 @@ body{
   font-size: 12px;
   font-weight: 800;
 }
+
+
+/* Student filters */
+.filters{
+  margin-top: 10px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.filters .select{
+  min-width: 180px;
+  flex: 1 1 180px;
+}
+.chk{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  user-select: none;
+}
+.chk input{
+  width: 16px;
+  height: 16px;
+  accent-color: var(--blue);
+}
+@media (max-width: 820px){
+  .filters{ gap: 8px; }
+  .filters .select{ flex: 1 1 100%; min-width: 0; }
+}
+
+/* Estudiante en riesgo */
+.item.risk{
+  border-left: 4px solid var(--red);
+}

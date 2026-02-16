@@ -567,6 +567,8 @@ function getCatalog_() {
 function getStudentList_(payload) {
   payload = payload || {};
   const ciclo = String(payload.ciclo_lectivo || '').trim();
+  const umbral = (payload.umbral !== undefined) ? Number(payload.umbral) : 5;
+  if (isNaN(umbral) || umbral < 0) throw new Error('umbral inválido');
 
   const sh = sheet_(SHEETS.ESTUDIANTES);
   const { headers, rows } = getValues_(sh);
@@ -599,6 +601,7 @@ function getStudentList_(payload) {
   const need = {};   // sid -> total materias a cerrar
   const done = {};   // sid -> cerradas
   const needsReview = {}; // sid -> true
+  const adeudaCount = {}; // sid -> cantidad adeudadas (condición o cierre)
 
   est.rows.forEach(r => {
     const c = String(r[eidx['ciclo_lectivo']] || '').trim();
@@ -610,6 +613,11 @@ function getStudentList_(payload) {
     const sit = String(r[eidx['situacion_actual']] || '').trim();
     const cond = String(r[eidx['condicion_academica']] || '').trim().toLowerCase();
     const res = (eidx['resultado_cierre'] !== undefined) ? String(r[eidx['resultado_cierre']] || '').trim() : '';
+
+    // Conteo de adeudadas para filtro "en riesgo" (impacta aunque aún no se haya ejecutado cierre global)
+    const resLc = String(res || '').trim().toLowerCase();
+    const isAdeuda = (cond === 'adeuda') || (resLc === 'no_aprobada' || resLc === 'no aprobada' || resLc === 'no_aprobo' || resLc === 'no' );
+    if (isAdeuda) adeudaCount[sid] = (adeudaCount[sid] || 0) + 1;
 
     // Materias a cerrar: las que cursó/recursó/intensificó en este ciclo
     if (sit === 'cursa_primera_vez' || sit === 'recursa' || sit === 'intensifica') {
@@ -632,7 +640,9 @@ function getStudentList_(payload) {
     return Object.assign({}, s, {
       cierre_pendiente: Math.max(0, total - cerradas),
       cierre_completo: cierreCompleto,
-      needs_review: !!needsReview[s.id_estudiante]
+      needs_review: !!needsReview[s.id_estudiante],
+      adeuda_count: adeudaCount[s.id_estudiante] || 0,
+      en_riesgo: (adeudaCount[s.id_estudiante] || 0) >= umbral
     });
   });
 }

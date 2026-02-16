@@ -50,6 +50,13 @@
         <div class="aside-head">
           <h2>Estudiantes</h2>
           <input id="studentSearch" class="input" placeholder="Buscar por nombre, división o ID…" />
+          <div class="filters">
+            <select id="courseFilter" class="select">
+              <option value="">Todos los cursos</option>
+            </select>
+            <label class="chk"><input type="checkbox" id="onlyPending" /> Faltan cargar</label>
+            <label class="chk"><input type="checkbox" id="onlyRisk" /> En riesgo</label>
+          </div>
         </div>
         <div id="studentsList" class="list"></div>
       </aside>
