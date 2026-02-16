@@ -27,6 +27,7 @@ function onOpen() {
       .createMenu('📘 Trayectorias')
       .addItem('🔑 Generar/Mostrar API Key', 'setupApiKey')
       .addItem('🧪 Probar API (ping)', 'testPing')
+      .addItem('🗓️ Crear ciclo nuevo (rollover)', 'uiRolloverCycle')
       .addToUi();
   } catch (err) {
     // Si no está vinculado a una planilla, no pasa nada.
@@ -57,6 +58,24 @@ function testPing() {
   }
 }
 
+
+function uiRolloverCycle() {
+  const ui = SpreadsheetApp.getUi();
+  const origen = ui.prompt('Crear ciclo nuevo', 'Año origen (ej. 2026):', ui.ButtonSet.OK_CANCEL);
+  if (origen.getSelectedButton() !== ui.Button.OK) return;
+  const destino = ui.prompt('Crear ciclo nuevo', 'Año destino (ej. 2027):', ui.ButtonSet.OK_CANCEL);
+  if (destino.getSelectedButton() !== ui.Button.OK) return;
+
+  const payload = {
+    ciclo_origen: String(origen.getResponseText() || '').trim(),
+    ciclo_destino: String(destino.getResponseText() || '').trim(),
+    usuario: 'menu'
+  };
+
+  const res = rolloverCycle_(payload);
+  ui.alert('Rollover completado:\n\n' + JSON.stringify(res, null, 2));
+}
+
 // ======== Web App entrypoint ========
 function doPost(e) {
   try {
@@ -75,7 +94,7 @@ function doGet() {
     ok: true,
     service: 'Trayectorias Backend',
     endpoints: ['POST {apiKey, action, payload}'],
-    actions: ['ping','getCatalog','getStudentList','getStudentStatus','saveStudentStatus','syncCatalogRows']
+    actions: ['ping','getCycles','getCatalog','getStudentList','getStudentStatus','saveStudentStatus','syncCatalogRows','rolloverCycle']
   }, 200);
 }
 
@@ -91,6 +110,9 @@ function handleRequest_(req) {
     case 'ping':
       return { ok: true, now: new Date().toISOString() };
 
+    case 'getCycles':
+      return { ok: true, cycles: getCycles_() };
+
     case 'getCatalog':
       return { ok: true, catalog: getCatalog_() };
 
@@ -105,6 +127,9 @@ function handleRequest_(req) {
 
     case 'syncCatalogRows':
       return { ok: true, data: syncCatalogRows_(payload) };
+
+    case 'rolloverCycle':
+      return { ok: true, data: rolloverCycle_(payload) };
 
     default:
       return { ok: false, error: 'Acción desconocida: ' + action };
@@ -172,6 +197,135 @@ function isoNow_() {
 }
 
 // ======== Actions ========
+
+function getCycles_() {
+  const sh = sheet_(SHEETS.ESTADO);
+  const { headers, rows } = getValues_(sh);
+  const idx = headerMap_(headers);
+  const set = {};
+  rows.forEach(r => {
+    const c = String(r[idx['ciclo_lectivo']] || '').trim();
+    if (c) set[c] = true;
+  });
+  const cycles = Object.keys(set);
+  cycles.sort((a,b) => (Number(b) - Number(a)) || String(b).localeCompare(String(a)));
+  return cycles;
+}
+
+/**
+ * Rollover anual: crea filas del nuevo ciclo lectivo SIN tocar ciclos anteriores.
+ * - condicion_academica: si alguna vez estuvo aprobada => aprobada; si no => adeuda.
+ * - nunca_cursada: TRUE si nunca tuvo cursada regular (cursa_primera_vez o recursa) y no está aprobada.
+ * - situacion_actual: se resetea a 'no_cursa_otro_motivo' (neutral).
+ *
+ * payload: {ciclo_origen, ciclo_destino, usuario}
+ */
+function rolloverCycle_(payload) {
+  const origen = String(payload.ciclo_origen || '').trim();
+  const destino = String(payload.ciclo_destino || '').trim();
+  const usuario = String(payload.usuario || 'rollover').trim();
+
+  if (!origen) throw new Error('Falta payload.ciclo_origen');
+  if (!destino) throw new Error('Falta payload.ciclo_destino');
+  if (origen === destino) throw new Error('ciclo_origen y ciclo_destino no pueden ser iguales');
+
+  const cycles = getCycles_();
+  const origenExiste = cycles.indexOf(origen) !== -1;
+
+  const students = getStudentList_(); // activos
+  const catalog = getCatalog_();
+
+  const sh = sheet_(SHEETS.ESTADO);
+  const { headers, rows } = getValues_(sh);
+  const idx = headerMap_(headers);
+
+  const destNum = Number(destino);
+  const hasDestNum = !isNaN(destNum);
+
+  const approvedMap = {}; // key sid|mid -> true
+  const regularMap = {};  // key sid|mid -> true (alguna vez cursó regular)
+  const existsDest = {};  // key sid|mid -> true
+
+  rows.forEach(r => {
+    const ciclo = String(r[idx['ciclo_lectivo']] || '').trim();
+    const sid = String(r[idx['id_estudiante']] || '').trim();
+    const mid = String(r[idx['id_materia']] || '').trim();
+    if (!ciclo || !sid || !mid) return;
+
+    const key = sid + '|' + mid;
+
+    if (ciclo === destino) {
+      existsDest[key] = true;
+      return;
+    }
+
+    // Considerar solo ciclos anteriores al destino si los ciclos son numéricos.
+    if (hasDestNum) {
+      const cNum = Number(ciclo);
+      if (!isNaN(cNum) && cNum >= destNum) return;
+    }
+
+    const cond = String(r[idx['condicion_academica']] || '').trim().toLowerCase();
+    const sit = String(r[idx['situacion_actual']] || '').trim();
+
+    if (cond === 'aprobada') approvedMap[key] = true;
+    if (sit === 'cursa_primera_vez' || sit === 'recursa') regularMap[key] = true;
+  });
+
+  const now = new Date();
+  const newRows = [];
+  let created = 0;
+  let skipped = 0;
+
+  students.forEach(s => {
+    const sid = s.id_estudiante;
+    catalog.forEach(m => {
+      const mid = m.id_materia;
+      const key = sid + '|' + mid;
+
+      if (existsDest[key]) { skipped++; return; }
+
+      const approved = !!approvedMap[key];
+      const everRegular = !!regularMap[key];
+
+      const condicion = approved ? 'aprobada' : 'adeuda';
+      const nunca = approved ? false : !everRegular;
+
+      const obj = {};
+      headers.forEach(h => obj[h] = '');
+
+      obj['ciclo_lectivo'] = destino;
+      obj['id_estudiante'] = sid;
+      obj['id_materia'] = mid;
+
+      if (obj.hasOwnProperty('condicion_academica')) obj['condicion_academica'] = condicion;
+      if (obj.hasOwnProperty('nunca_cursada')) obj['nunca_cursada'] = nunca;
+      if (obj.hasOwnProperty('situacion_actual')) obj['situacion_actual'] = 'no_cursa_otro_motivo';
+      if (obj.hasOwnProperty('motivo_no_cursa')) obj['motivo_no_cursa'] = '';
+      if (obj.hasOwnProperty('fecha_actualizacion')) obj['fecha_actualizacion'] = now;
+      if (obj.hasOwnProperty('usuario')) obj['usuario'] = usuario;
+
+      newRows.push(headers.map(h => obj[h]));
+      created++;
+    });
+  });
+
+  if (newRows.length) {
+    sh.getRange(sh.getLastRow() + 1, 1, newRows.length, headers.length).setValues(newRows);
+  }
+
+  return {
+    ciclo_origen: origen,
+    ciclo_destino: destino,
+    origen_existe: origenExiste,
+    estudiantes_procesados: students.length,
+    materias_catalogo: catalog.length,
+    filas_creadas: created,
+    filas_omitidas_ya_existian: skipped
+  };
+}
+
+
 function getCatalog_() {
   const sh = sheet_(SHEETS.CATALOGO);
   const { headers, rows } = getValues_(sh);

@@ -142,8 +142,7 @@ function renderPills(containerId, items) {
     .forEach(m => {
       const pill = document.createElement('div');
       pill.className = 'pill';
-      const tag = m.es_troncal ? `<span class="tag">TRONCAL</span>` : '';
-      pill.innerHTML = `${escapeHtml(m.nombre || m.id_materia)} <span class="muted">(${escapeHtml(m.id_materia)})</span> ${tag}`;
+      pill.innerHTML = `${escapeHtml(m.nombre || m.id_materia)} <span class="muted">(${escapeHtml(m.id_materia)})</span>`;
       el.appendChild(pill);
     });
 }
@@ -245,10 +244,7 @@ function renderEditorTable(materias) {
   const sorted = materias.slice().sort((a,b) => (a.anio||0)-(b.anio||0) || String(a.nombre).localeCompare(String(b.nombre)));
 
   sorted.forEach(m => {
-    const tr = document.createElement('tr');
-
-    const troncal = m.es_troncal ? '<span class="badge">TRONCAL</span>' : '<span class="muted">—</span>';
-    const condicion = m.condicion_academica ? `<span class="badge">${escapeHtml(m.condicion_academica.toUpperCase())}</span>` : '<span class="muted">—</span>';
+    const tr = document.createElement('tr');    const condicion = m.condicion_academica ? `<span class="badge">${escapeHtml(m.condicion_academica.toUpperCase())}</span>` : '<span class="muted">—</span>';
     const nunca = m.nunca_cursada ? '<span class="badge">SÍ</span>' : '<span class="muted">NO</span>';
 
     const sel = document.createElement('select');
@@ -268,12 +264,11 @@ function renderEditorTable(materias) {
     tr.innerHTML = `
       <td>${escapeHtml(m.nombre || m.id_materia)} <div class="muted">${escapeHtml(m.id_materia)}</div></td>
       <td>${escapeHtml(m.anio || '')}</td>
-      <td>${troncal}</td>
       <td>${condicion}</td>
       <td>${nunca}</td>
       <td></td>
     `;
-    tr.children[5].appendChild(sel);
+    tr.children[4].appendChild(sel);
     tbody.appendChild(tr);
   });
 }
@@ -345,6 +340,38 @@ function autoAdjustTope() {
   }
 
   setMessage('saveMsg', moved ? `Ajuste aplicado: se movieron ${moved} materias a “No cursa por tope”.` : 'No hizo falta ajustar.', moved ? 'ok' : '');
+}
+
+
+function renderCycles(cycles) {
+  const sel = $('cicloSelect');
+  const current = state.ciclo || sel.value;
+  sel.innerHTML = '';
+  (cycles || []).forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c;
+    sel.appendChild(opt);
+  });
+
+  // Mantener selección si existe; si no, usar el primer ciclo disponible
+  if (cycles && cycles.includes(current)) {
+    sel.value = current;
+    state.ciclo = current;
+  } else if (cycles && cycles.length) {
+    sel.value = cycles[0];
+    state.ciclo = cycles[0];
+  } else {
+    // fallback
+    state.ciclo = sel.value || '2026';
+  }
+}
+
+async function loadCycles() {
+  const data = await apiCall('getCycles', {});
+  const cycles = data.cycles || [];
+  renderCycles(cycles);
+  return cycles;
 }
 
 async function loadStudents() {
@@ -439,6 +466,7 @@ function wireEvents() {
       await apiCall('ping', {});
       setMessage('gateMsg', '', '');
       setGateVisible(false);
+      await loadCycles();
       await loadStudents();
     } catch (err) {
       setMessage('gateMsg', 'Clave inválida o backend mal configurado: ' + err.message, 'err');
@@ -454,12 +482,64 @@ function wireEvents() {
   };
 
   $('btnRefresh').onclick = async () => {
-    if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
-    await loadStudents();
-    if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
-  };
+  if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
+  await loadCycles();
+  await loadStudents();
+  if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
+};
 
-  $('studentSearch').oninput = () => renderStudents(state.students);
+$('btnRollover').onclick = async () => {
+  if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
+
+  const origen = (prompt('Año origen (ej. 2026):', state.ciclo) || '').trim();
+  if (!origen) return;
+
+  let sugerido = '';
+  const n = Number(origen);
+  if (!isNaN(n)) sugerido = String(n + 1);
+
+  const destino = (prompt('Año destino (ej. 2027):', sugerido) || '').trim();
+  if (!destino) return;
+
+  if (destino === origen) return alert('El año destino no puede ser igual al origen.');
+
+  const ok = confirm(
+    `Esto va a crear (si no existen) filas en EstadoPorCiclo para el ciclo ${destino}, ` +
+    `para TODOS los estudiantes activos y TODAS las materias del catálogo.
+
+` +
+    `No borra ni modifica ciclos anteriores.
+
+¿Continuar?`
+  );
+  if (!ok) return;
+
+  try {
+    const res = await apiCall('rolloverCycle', { ciclo_origen: origen, ciclo_destino: destino, usuario: 'web' });
+    alert(
+      `Rollover listo ✅
+
+` +
+      `Origen: ${res.data.ciclo_origen} (existe: ${res.data.origen_existe})
+` +
+      `Destino: ${res.data.ciclo_destino}
+` +
+      `Filas creadas: ${res.data.filas_creadas}
+` +
+      `Omitidas (ya existían): ${res.data.filas_omitidas_ya_existian}`
+    );
+
+    await loadCycles();
+    $('cicloSelect').value = destino;
+    state.ciclo = destino;
+
+    if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+};
+
+$('studentSearch').oninput = () => renderStudents(state.students);
 
   $('cicloSelect').onchange = async () => {
     state.ciclo = $('cicloSelect').value;
@@ -495,6 +575,7 @@ async function init() {
     try {
       await apiCall('ping', {});
       setGateVisible(false);
+      await loadCycles();
       await loadStudents();
     } catch {
       // clave vieja o backend mal
