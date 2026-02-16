@@ -63,7 +63,6 @@
           </div>
           <div class="head-actions">
             <button id="btnSync" class="btn">Agregar materias faltantes</button>
-            <button id="btnEvaluarMaterias" class="btn evaluar">Evaluar materias</button>
             <button id="btnSave" class="btn primary" disabled>Guardar cambios</button>
           </div>
         </div>
@@ -138,7 +137,7 @@
             </p>
             <div class="row gap">
               <button id="btnAutoAdjust" class="btn ghost">Ajuste automático (prioridad nunca cursadas)</button>
-            </div>
+</div>
           </div>
 
           <div class="table-wrap">
@@ -171,67 +170,74 @@
     </section>
   </main>
 
-  <!-- Modal: Resumen por división -->
-  <div id="modalSummary" class="modal hidden" aria-hidden="true">
-    <div class="modal-backdrop" id="modalSummaryBackdrop"></div>
-    <div class="modal-card">
-      <div class="modal-head">
-        <h2>Resumen por división</h2>
-        <button id="btnCloseSummary" class="btn ghost">Cerrar</button>
-      </div>
-      <p class="muted">
-        Cuenta estudiantes en <b>riesgo</b> al finalizar el ciclo: <b>5 o más</b> materias con condición <b>ADEUDA</b> en el ciclo seleccionado.
-      </p>
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>División</th>
-              <th>Turno</th>
-              <th>Total estudiantes</th>
-              <th>En riesgo (≥5 adeudadas)</th>
-            </tr>
-          </thead>
-          <tbody id="summaryTbody"></tbody>
-        </table>
-      </div>
-      <div class="row end">
-        <button id="btnRefreshSummary" class="btn">Actualizar resumen</button>
-      </div>
-      <div id="summaryMsg" class="msg"></div>
-    </div>
-  </div>
 
-  <!-- Nuevo Modal: Evaluación de materias -->
-  <div id="modalEvaluacion" class="modal hidden modal-evaluacion" aria-hidden="true">
-    <div class="modal-backdrop" id="modalEvaluacionBackdrop"></div>
-    <div class="modal-card">
-      <div class="modal-head">
-        <h2>Evaluar materias del ciclo</h2>
-        <button id="btnCancelarEvaluacion" class="btn ghost">Cerrar</button>
-      </div>
-      <p class="muted">
-        Indicá qué materias aprobó y cuáles no. Una vez guardado, el estudiante quedará marcado como "trabajado" en gris.
-      </p>
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Materia</th>
-              <th>Año</th>
-              <th>Situación actual</th>
-              <th>¿Aprobó?</th>
-            </tr>
-          </thead>
-          <tbody id="evaluacionTbody"></tbody>
-        </table>
-      </div>
-      <div class="modal-actions">
-        <button id="btnGuardarEvaluacion" class="btn primary">Guardar evaluación</button>
-        <button id="btnCancelarEvaluacion" class="btn ghost">Cancelar</button>
+    <!-- Modal: Resumen por división -->
+    <div id="modalSummary" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" id="modalSummaryBackdrop"></div>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2>Resumen por división</h2>
+          <button id="btnCloseSummary" class="btn ghost">Cerrar</button>
+        </div>
+        <p class="muted">
+          Cuenta estudiantes en <b>riesgo</b> al finalizar el ciclo: <b>5 o más</b> materias con condición <b>ADEUDA</b> en el ciclo seleccionado.
+        </p>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>División</th>
+                <th>Turno</th>
+                <th>Total estudiantes</th>
+                <th>En riesgo (≥5 adeudadas)</th>
+              </tr>
+            </thead>
+            <tbody id="summaryTbody"></tbody>
+          </table>
+        </div>
+        <div class="row end">
+          <button id="btnRefreshSummary" class="btn">Actualizar resumen</button>
+        </div>
+        <div id="summaryMsg" class="msg"></div>
       </div>
     </div>
-  </div>
+
+
+
+
+    <!-- Modal: Cierre por estudiante (Aprobó / No aprobó) -->
+    <div id="modalCierre" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" id="modalCierreBackdrop"></div>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2 id="modalCierreTitle">Cierre por estudiante</h2>
+          <button id="btnCloseCierre" class="btn ghost">Cerrar</button>
+        </div>
+        <p class="muted">
+          Marcá el resultado de cierre para las materias que el/la estudiante <b>cursó / recursó / intensificó</b> en el ciclo seleccionado.
+          Cuando todas estén marcadas, el estudiante queda en gris (cierre completo).
+        </p>
+
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Materia</th>
+                <th>Año</th>
+                <th>Situación</th>
+                <th>Resultado</th>
+              </tr>
+            </thead>
+            <tbody id="cierreTbody"></tbody>
+          </table>
+        </div>
+
+        <div class="row end" style="margin-top:12px">
+          <button id="btnSaveCierre" class="btn primary" disabled>Guardar cierre</button>
+        </div>
+        <div id="cierreMsg" class="msg"></div>
+      </div>
+    </div>
 
   <footer class="footer muted">
     Hecho para seguimiento de trayectorias · GitHub Pages + Google Sheets

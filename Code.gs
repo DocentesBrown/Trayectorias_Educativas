@@ -117,7 +117,7 @@ function handleRequest_(req) {
       return { ok: true, catalog: getCatalog_() };
 
     case 'getStudentList':
-      return { ok: true, students: getStudentList_() };
+      return { ok: true, students: getStudentList_(payload) };
 
     case 'getStudentStatus':
       return { ok: true, data: getStudentStatus_(payload) };
@@ -266,7 +266,9 @@ function rolloverCycle_(payload) {
   const origen = String(payload.ciclo_origen || '').trim();
   const destino = String(payload.ciclo_destino || '').trim();
   const usuario = String(payload.usuario || 'rollover').trim();
-  const updateStudents = (payload.update_students !== undefined) ? toBool_(payload.update_students) : false;
+
+  // Por pedido: por defecto SI promociona estudiantes (anio_actual +1)
+  const updateStudents = (payload.update_students !== undefined) ? toBool_(payload.update_students) : true;
   const updateDivision = (payload.update_division !== undefined) ? toBool_(payload.update_division) : true;
 
   if (!origen) throw new Error('Falta payload.ciclo_origen');
@@ -276,12 +278,16 @@ function rolloverCycle_(payload) {
   const cycles = getCycles_();
   const origenExiste = cycles.indexOf(origen) !== -1;
 
-  const students = getStudentList_(); // activos
+  const students = getStudentList_({}); // activos
   const catalog = getCatalog_();
 
   const sh = sheet_(SHEETS.ESTADO);
-  const { headers, rows } = getValues_(sh);
-  const idx = headerMap_(headers);
+
+  // --- 1) Crear filas faltantes del ciclo destino (como antes) ---
+  let tmp = getValues_(sh);
+  let headers = tmp.headers;
+  let rows = tmp.rows;
+  let idx = headerMap_(headers);
 
   const destNum = Number(destino);
   const hasDestNum = !isNaN(destNum);
@@ -314,7 +320,6 @@ function rolloverCycle_(payload) {
     const resCierre = (idx['resultado_cierre'] !== undefined) ? String(r[idx['resultado_cierre']] || '').trim().toLowerCase() : '';
 
     if (cond === 'aprobada') approvedMap[key] = true;
-    // Si hay resultado de cierre marcado, lo tomamos como definitivo (sin des-aprobar algo ya aprobado)
     if (resCierre === 'aprobada' || resCierre === 'aprobo' || resCierre === 'aprobó') approvedMap[key] = true;
     if (sit === 'cursa_primera_vez' || sit === 'recursa') regularMap[key] = true;
   });
@@ -363,9 +368,164 @@ function rolloverCycle_(payload) {
     sh.getRange(sh.getLastRow() + 1, 1, newRows.length, headers.length).setValues(newRows);
   }
 
+  // --- 2) Promoción de estudiantes (anio_actual +1) ---
   let promoInfo = null;
   if (updateStudents) {
     promoInfo = updateStudentsOnRollover_(usuario);
+  }
+
+  // --- 3) Ajuste automático del plan anual en el ciclo destino (12 regular + 4 intensifica) ---
+  // Re-leemos EstadoPorCiclo para incluir filas recién creadas
+  tmp = getValues_(sh);
+  headers = tmp.headers;
+  rows = tmp.rows;
+  idx = headerMap_(headers);
+
+  // Mapas auxiliares
+  const activeSet = {};
+  const newGradeByStudent = {};
+  students.forEach(s => {
+    activeSet[s.id_estudiante] = true;
+    const oldYear = Number(s.anio_actual || '');
+    newGradeByStudent[s.id_estudiante] = (!isNaN(oldYear) && oldYear > 0) ? Math.min(oldYear + 1, 6) : null;
+  });
+
+  const catalogByYear = {};
+  catalog.forEach(m => {
+    const y = Number(m.anio || '');
+    if (isNaN(y) || y <= 0) return;
+    if (!catalogByYear[y]) catalogByYear[y] = [];
+    catalogByYear[y].push(String(m.id_materia));
+  });
+
+  // Adeudadas del ciclo origen (solo si existe)
+  const owedByStudent = {};
+  if (origenExiste) {
+    rows.forEach(r => {
+      const c = String(r[idx['ciclo_lectivo']] || '').trim();
+      if (c !== origen) return;
+      const sid = String(r[idx['id_estudiante']] || '').trim();
+      if (!activeSet[sid]) return;
+      const mid = String(r[idx['id_materia']] || '').trim();
+      const cond = String(r[idx['condicion_academica']] || '').trim().toLowerCase();
+      if (cond === 'adeuda') {
+        if (!owedByStudent[sid]) owedByStudent[sid] = [];
+        owedByStudent[sid].push(mid);
+      }
+    });
+  }
+
+  // Map row index (destino) for fast updates
+  const destRowIndex = {}; // sid|mid -> i
+  rows.forEach((r, i) => {
+    const c = String(r[idx['ciclo_lectivo']] || '').trim();
+    if (c !== destino) return;
+    const sid = String(r[idx['id_estudiante']] || '').trim();
+    const mid = String(r[idx['id_materia']] || '').trim();
+    if (!sid || !mid) return;
+    if (!activeSet[sid]) return;
+    destRowIndex[sid + '|' + mid] = i;
+  });
+
+  // Primero: resetear campos del destino para estudiantes activos (para evitar basura previa)
+  rows.forEach((r, i) => {
+    const c = String(r[idx['ciclo_lectivo']] || '').trim();
+    if (c !== destino) return;
+    const sid = String(r[idx['id_estudiante']] || '').trim();
+    if (!activeSet[sid]) return;
+
+    if (idx['situacion_actual'] !== undefined) r[idx['situacion_actual']] = 'no_cursa_otro_motivo';
+    if (idx['motivo_no_cursa'] !== undefined) r[idx['motivo_no_cursa']] = '';
+    if (idx['resultado_cierre'] !== undefined) r[idx['resultado_cierre']] = '';
+    if (idx['ciclo_cerrado'] !== undefined) r[idx['ciclo_cerrado']] = false;
+    if (idx['fecha_actualizacion'] !== undefined) r[idx['fecha_actualizacion']] = now;
+    if (idx['usuario'] !== undefined) r[idx['usuario']] = usuario;
+  });
+
+  let revisionManualCount = 0;
+
+  function setDest_(sid, mid, fields) {
+    const key = sid + '|' + mid;
+    const ri = destRowIndex[key];
+    if (ri === undefined) return;
+    const r = rows[ri];
+    Object.keys(fields).forEach(f => {
+      if (idx[f] !== undefined) r[idx[f]] = fields[f];
+    });
+    if (idx['fecha_actualizacion'] !== undefined) r[idx['fecha_actualizacion']] = now;
+    if (idx['usuario'] !== undefined) r[idx['usuario']] = usuario;
+  }
+
+  students.forEach(s => {
+    const sid = s.id_estudiante;
+    const newYear = newGradeByStudent[sid];
+    if (!newYear) return;
+
+    const newYearMats = (catalogByYear[newYear] || []).slice();
+    const owed = (owedByStudent[sid] || []).slice();
+
+    let primera = [];
+    let recursa = [];
+    let intensifica = [];
+    let droppedNew = [];
+    let overflowOwed = [];
+
+    if (owed.length > 0 && owed.length <= 4) {
+      // Regla: si adeuda hasta 4, esas intensifican (no cuentan en 12)
+      intensifica = owed.slice();
+      primera = newYearMats.slice(); // intentamos que curse todo lo del año
+      // Tope 12: si el catálogo del año supera 12 (raro), recortamos por tope
+      if (primera.length > 12) {
+        droppedNew = primera.slice(12);
+        primera = primera.slice(0, 12);
+      }
+    } else {
+      // Adeuda > 4 (o 0): se usa recursa con prioridad (excepto 6to)
+      if (newYear === 6) {
+        // Prioridad: todas las de 6to, completar con recursa
+        primera = newYearMats.slice();
+        if (primera.length > 12) {
+          droppedNew = primera.slice(12);
+          primera = primera.slice(0, 12);
+        }
+        const slots = 12 - primera.length;
+        if (owed.length > 0 && slots > 0) {
+          recursa = owed.slice(0, slots);
+          overflowOwed = owed.slice(slots);
+        } else if (owed.length > 0) {
+          overflowOwed = owed.slice();
+        }
+      } else {
+        // Otros años: prioridad recursadas (adeudadas), el año nuevo queda "no cursa por tope" si excede 12
+        const recCount = Math.min(owed.length, 12);
+        recursa = owed.slice(0, recCount);
+        overflowOwed = owed.slice(recCount);
+
+        const slots = 12 - recursa.length;
+        if (slots > 0) {
+          primera = newYearMats.slice(0, slots);
+          droppedNew = newYearMats.slice(slots);
+        } else {
+          droppedNew = newYearMats.slice();
+        }
+      }
+    }
+
+    // Aplicar al destino
+    primera.forEach(mid => setDest_(sid, mid, { situacion_actual: 'cursa_primera_vez' }));
+    recursa.forEach(mid => setDest_(sid, mid, { situacion_actual: 'recursa' }));
+    intensifica.forEach(mid => setDest_(sid, mid, { situacion_actual: 'intensifica' }));
+
+    droppedNew.forEach(mid => setDest_(sid, mid, { situacion_actual: 'no_cursa_por_tope', motivo_no_cursa: 'No cursa por tope 12 (prioriza adeudadas)' }));
+    overflowOwed.forEach(mid => setDest_(sid, mid, { situacion_actual: 'no_cursa_por_tope', motivo_no_cursa: 'No cursa por tope 12 (exceso de adeudadas)' }));
+
+    // Revisión manual: si dejamos alguna "nunca cursada" por tope o si sobran adeudadas
+    if (droppedNew.length > 0 || overflowOwed.length > 0) revisionManualCount++;
+  });
+
+  // Guardar cambios en EstadoPorCiclo (reescribimos todo el rango de datos)
+  if (rows.length) {
+    sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
   }
 
   return {
@@ -378,7 +538,8 @@ function rolloverCycle_(payload) {
     filas_omitidas_ya_existian: skipped,
     estudiantes_promovidos: promoInfo ? promoInfo.estudiantes_actualizados : 0,
     divisiones_actualizadas: promoInfo ? promoInfo.division_actualizada : 0,
-    estudiantes_omitidos_promo: promoInfo ? promoInfo.omitidos : 0
+    estudiantes_omitidos_promo: promoInfo ? promoInfo.omitidos : 0,
+    estudiantes_revision_manual: revisionManualCount
   };
 }
 
@@ -401,13 +562,16 @@ function getCatalog_() {
     .filter(m => m.id_materia);
 }
 
-function getStudentList_() {
+function getStudentList_(payload) {
+  payload = payload || {};
+  const ciclo = String(payload.ciclo_lectivo || '').trim();
+
   const sh = sheet_(SHEETS.ESTUDIANTES);
   const { headers, rows } = getValues_(sh);
   const idx = headerMap_(headers);
 
-  // Esperados: id_estudiante, apellido, nombre, anio_actual, division, turno, activo
-  return rows
+  // Activos
+  const students = rows
     .filter(r => r.some(c => String(c).trim() !== ''))
     .map(r => ({
       id_estudiante: String(r[idx['id_estudiante']] || '').trim(),
@@ -421,6 +585,54 @@ function getStudentList_() {
     }))
     .filter(s => s.id_estudiante)
     .filter(s => s.activo !== false);
+
+  // Si no hay ciclo, devolvemos sin flags
+  if (!ciclo) return students;
+
+  // Flags por ciclo: cierre completo + revisión manual (rosado)
+  const estadoSh = sheet_(SHEETS.ESTADO);
+  const est = getValues_(estadoSh);
+  const eidx = headerMap_(est.headers);
+
+  const need = {};   // sid -> total materias a cerrar
+  const done = {};   // sid -> cerradas
+  const needsReview = {}; // sid -> true
+
+  est.rows.forEach(r => {
+    const c = String(r[eidx['ciclo_lectivo']] || '').trim();
+    if (c !== ciclo) return;
+
+    const sid = String(r[eidx['id_estudiante']] || '').trim();
+    if (!sid) return;
+
+    const sit = String(r[eidx['situacion_actual']] || '').trim();
+    const cond = String(r[eidx['condicion_academica']] || '').trim().toLowerCase();
+    const res = (eidx['resultado_cierre'] !== undefined) ? String(r[eidx['resultado_cierre']] || '').trim() : '';
+
+    // Materias a cerrar: las que cursó/recursó/intensificó en este ciclo
+    if (sit === 'cursa_primera_vez' || sit === 'recursa' || sit === 'intensifica') {
+      need[sid] = (need[sid] || 0) + 1;
+      if (res === 'aprobada' || res === 'no_aprobada') done[sid] = (done[sid] || 0) + 1;
+    }
+
+    // Rosado: si tuvo que dejar "no cursa por tope" alguna materia nunca cursada
+    // (señal de ajuste por exceso / prioridad adeudadas)
+    if (sit === 'no_cursa_por_tope') {
+      const nunca = (eidx['nunca_cursada'] !== undefined) ? toBool_(r[eidx['nunca_cursada']]) : false;
+      if (nunca) needsReview[sid] = true;
+    }
+  });
+
+  return students.map(s => {
+    const total = need[s.id_estudiante] || 0;
+    const cerradas = done[s.id_estudiante] || 0;
+    const cierreCompleto = (total > 0 && cerradas >= total);
+    return Object.assign({}, s, {
+      cierre_pendiente: Math.max(0, total - cerradas),
+      cierre_completo: cierreCompleto,
+      needs_review: !!needsReview[s.id_estudiante]
+    });
+  });
 }
 
 

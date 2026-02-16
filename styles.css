@@ -7,7 +7,6 @@
   --purple:#4d3069;
   --cyan:#3d8fb0;
   --red:#da6863;
-  --pink:#f8bbd0;
   --border: rgba(15, 23, 42, 0.10);
   --shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
   --radius: 18px;
@@ -97,11 +96,6 @@ body{
 .btn.ghost{
   background: transparent;
 }
-.btn.evaluar{
-  background: var(--purple);
-  color: #fff;
-  border-color: rgba(77,48,105,0.35);
-}
 
 .list{margin-top:12px; display:flex; flex-direction:column; gap:8px; max-height:70vh; overflow:auto; padding-right:6px}
 .item{
@@ -109,43 +103,14 @@ body{
   border: 1px solid var(--border);
   border-radius: 14px;
   cursor:pointer;
-  position: relative;
 }
 .item:hover{border-color: rgba(36,73,110,0.30)}
 .item.active{
   border-color: rgba(36,73,110,0.45);
   box-shadow: 0 10px 24px rgba(36,73,110,0.12);
 }
-.item.problema{
-  background: rgba(218,104,99,0.15);
-  border-color: var(--red);
-}
-.item.trabajado{
-  opacity: 0.7;
-  background: rgba(15,23,42,0.05);
-}
 .item .title{font-weight:800; color:var(--blue)}
 .item .sub{font-size:12px; color:var(--muted); margin-top:2px}
-.item .problema-badge{
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  font-size: 10px;
-  background: var(--red);
-  color: white;
-  padding: 2px 6px;
-  border-radius: 999px;
-}
-.item .trabajado-badge{
-  position: absolute;
-  bottom: 5px;
-  right: 5px;
-  font-size: 10px;
-  background: var(--blue);
-  color: white;
-  padding: 2px 6px;
-  border-radius: 999px;
-}
 
 .aside-head{display:flex; flex-direction:column; gap:10px}
 
@@ -261,6 +226,7 @@ body{
   .top-actions{gap:8px}
 }
 
+
 /* Modal */
 .modal{
   position: fixed;
@@ -293,26 +259,11 @@ body{
   align-items:center;
   justify-content:space-between;
   gap:10px;
-  margin-bottom: 15px;
 }
 .row.gap{gap:10px; flex-wrap:wrap}
 
-/* Modal de evaluación específico */
-.modal-evaluacion .table{
-  min-width: 600px;
-}
-.evaluacion-select{
-  width: 100%;
-  min-width: 150px;
-}
-.modal-actions{
-  margin-top: 20px;
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
-}
 
-/* Materias aprobadas: fila gris suave */
+/* Materias aprobadas: fila gris suave + controles bloqueados */
 .table tr.row-approved td{
   background: rgba(15, 23, 42, 0.05);
 }
@@ -320,4 +271,32 @@ body{
   background: rgba(15, 23, 42, 0.04);
   color: var(--muted);
   cursor: not-allowed;
+}
+
+
+/* Estudiantes: cierre completo (gris) y revisión manual (rosado) */
+.item.done{
+  background: rgba(15, 23, 42, 0.05);
+  opacity: 0.75;
+}
+.item.needs-review{
+  border-color: rgba(218,104,99,0.55);
+  background: rgba(218,104,99,0.10);
+}
+.item-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:10px;
+}
+.item-actions{
+  display:flex;
+  gap:8px;
+  align-items:center;
+}
+.btn.tiny{
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 800;
 }
