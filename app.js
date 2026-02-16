@@ -118,7 +118,7 @@ function renderStudents(list) {
   const q = ($('studentSearch').value || '').trim().toLowerCase();
 
   let filtered = (list || []).filter(s => {
-    const t = `${s.id_estudiante} ${s.apellido} ${s.nombre} ${s.division} ${s.anio_actual} ${s.turno}`.toLowerCase();
+    const t = `${s.id_estudiante} ${s.apellido} ${s.nombre} ${s.anio_actual} ${s.orientacion || ''}`.toLowerCase();
     return t.includes(q);
   });
 
@@ -158,7 +158,7 @@ function renderStudents(list) {
       <div class="item-head">
         <div>
           <div class="title">${escapeHtml(`${s.apellido}, ${s.nombre}`)}</div>
-          <div class="sub">${escapeHtml(`${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante}`)}</div>
+          <div class="sub">${escapeHtml(`Año: ${s.anio_actual || '—'} · ${s.orientacion ? 'Orientación: ' + s.orientacion + ' · ' : ''}ID: ${s.id_estudiante}`)}</div>
         </div>
         <div class="item-actions">
           <button class="btn tiny ghost" data-action="cierre">Cierre</button>
@@ -186,13 +186,11 @@ function renderStudents(list) {
 
 
 function courseKey_(s){
-  return `${s.anio_actual || ''}|${s.division || ''}|${s.turno || ''}`;
+  return `${s.anio_actual || ''}`;
 }
 function courseLabel_(s){
   const a = (s.anio_actual !== undefined && s.anio_actual !== null && s.anio_actual !== '') ? `${s.anio_actual}º` : '';
-  const d = (s.division || '—');
-  const t = (s.turno || '');
-  return `${a} ${d}${t ? ' · ' + t : ''}`.trim();
+  return a || '—';
 }
 
 function rebuildCourseOptions(list){
@@ -210,13 +208,13 @@ function rebuildCourseOptions(list){
 
   const entries = Array.from(map.entries()).sort((a,b) => {
     // sort by year number then label
-    const ya = Number(String(a[0]).split('|')[0] || 0);
-    const yb = Number(String(b[0]).split('|')[0] || 0);
+    const ya = Number(String(a[0]) || 0);
+    const yb = Number(String(b[0]) || 0);
     if (ya !== yb) return ya - yb;
     return String(a[1]).localeCompare(String(b[1]));
   });
 
-  sel.innerHTML = `<option value="">Todos los cursos</option>`;
+  sel.innerHTML = `<option value="">Todos los años</option>`;
   entries.forEach(([key,label]) => {
     const opt = document.createElement('option');
     opt.value = key;
@@ -520,6 +518,89 @@ function setModalVisible(modalId, visible) {
   el.setAttribute('aria-hidden', visible ? 'false' : 'true');
 }
 
+// ======== Orientación (3º → 4º en rollover) ========
+function uniqueOrientationsFromCatalog_(catalog){
+  const set = new Set();
+  (catalog || []).forEach(m => {
+    const o = (m.orientacion || '').trim();
+    const y = Number(m.anio || 0);
+    if (o && y >= 4) set.add(o);
+  });
+  return Array.from(set.values()).sort((a,b) => a.localeCompare(b));
+}
+
+function openOrientModal_(students3ro, orientOptions){
+  return new Promise((resolve) => {
+    const modalId = 'modalOrient';
+    const tbody = $('orientTbody');
+    tbody.innerHTML = '';
+
+    (students3ro || []).forEach(s => {
+      const tr = document.createElement('tr');
+      const current = (s.orientacion || '').trim();
+      const opts = ['<option value="">Elegí…</option>']
+        .concat((orientOptions || []).map(o => `<option value="${escapeHtml(o)}"${(current && o === current) ? ' selected' : ''}>${escapeHtml(o)}</option>`))
+        .join('');
+
+      tr.innerHTML = `
+        <td data-label="Estudiante">${escapeHtml(`${s.apellido}, ${s.nombre}`)}</td>
+        <td data-label="ID">${escapeHtml(s.id_estudiante)}</td>
+        <td data-label="Orientación">
+          <select class="select" data-sid="${escapeHtml(s.id_estudiante)}">${opts}</select>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    const close = (val) => {
+      setModalVisible(modalId, false);
+      resolve(val);
+    };
+
+    $('btnOrientCancel').onclick = () => close(null);
+    $('modalOrientBackdrop').onclick = () => close(null);
+
+    $('btnOrientContinue').onclick = () => {
+      const selects = Array.from(tbody.querySelectorAll('select[data-sid]'));
+      const mapping = {};
+      for (const sel of selects) {
+        const sid = sel.getAttribute('data-sid');
+        const val = (sel.value || '').trim();
+        if (!val) {
+          toast('Falta elegir orientación para al menos un/a estudiante.');
+          sel.focus();
+          return;
+        }
+        mapping[sid] = val;
+      }
+      close(mapping);
+    };
+
+    setModalVisible(modalId, true);
+  });
+}
+
+async function collectOrientationsForRolloverIfNeeded_(origen){
+  // 1) estudiantes actuales
+  const stRes = await apiCall('getStudentList', { ciclo_lectivo: origen });
+  const students = stRes.data || [];
+  const students3ro = students.filter(s => Number(s.anio_actual || 0) === 3);
+
+  if (!students3ro.length) return {}; // nada que pedir
+
+  // 2) orientaciones desde catálogo
+  const catRes = await apiCall('getCatalog', {});
+  const options = uniqueOrientationsFromCatalog_(catRes.data || []);
+
+  if (!options.length) {
+    alert('No encontré orientaciones en MateriasCatalogo (columna "orientacion").\n\nAgregá valores en esa columna para materias de 4º, 5º y 6º.');
+    return null;
+  }
+
+  return await openOrientModal_(students3ro, options); // mapping o null
+}
+
+
 // ======== Cierre por estudiante (modal) ========
 async function openCierreModalForStudent(idEstudiante) {
   // Selecciona estudiante (carga datos) y abre modal
@@ -670,10 +751,10 @@ function renderDivisionSummary(divs) {
   rows.forEach(d => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td data-label="División">${escapeHtml(d.division || '—')}</td>
-      <td data-label="Turno">${escapeHtml(d.turno || '')}</td>
+      <td data-label="Año">${escapeHtml(d.anio || '—')}</td>
       <td data-label="Total">${escapeHtml(d.total_estudiantes || 0)}</td>
       <td data-label="En riesgo"><b>${escapeHtml(d.en_riesgo || 0)}</b></td>
+      <td data-label="Sin datos">${escapeHtml(d.sin_datos || 0)}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -854,54 +935,47 @@ $('btnRefresh').onclick = async () => {
 };
 
 $('btnRollover').onclick = async () => {
-  if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
-
-  const origen = (prompt('Año origen (ej. 2026):', state.ciclo) || '').trim();
-  if (!origen) return;
-
-  let sugerido = '';
-  const n = Number(origen);
-  if (!isNaN(n)) sugerido = String(n + 1);
-
-  const destino = (prompt('Año destino (ej. 2027):', sugerido) || '').trim();
-  if (!destino) return;
-
-  if (destino === origen) return alert('El año destino no puede ser igual al origen.');
+  const origen = state.ciclo;
+  const destino = String(Number(origen) + 1);
 
   const ok = confirm(
-    `Esto va a crear (si no existen) filas en EstadoPorCiclo para el ciclo ${destino}, ` +
-    `para TODOS los estudiantes activos y TODAS las materias del catálogo.
-
-` +
-    `No borra ni modifica ciclos anteriores.
-
-¿Continuar?`
+    `Crear ciclo nuevo: ${destino}\n\n` +
+    `Esto crea filas en EstadoPorCiclo para el ciclo destino (solo materias relevantes por orientación).\n` +
+    `Además, promociona estudiantes (año +1).\n\n` +
+    `No borra ni modifica ciclos anteriores.\n\n¿Continuar?`
   );
   if (!ok) return;
 
-    try {
+  try {
     setBtnLoading($('btnRollover'), true, 'Creando ciclo…');
-    const res = await apiCall('rolloverCycle', { ciclo_origen: origen, ciclo_destino: destino, usuario: 'web', update_students: true, update_division: true });
-    alert(
-      `Rollover listo ✅
 
-` +
-      `Origen: ${res.data.ciclo_origen} (existe: ${res.data.origen_existe})
-` +
-      `Destino: ${res.data.ciclo_destino}
-` +
-      `Filas creadas: ${res.data.filas_creadas}
-` +
-      `Omitidas (ya existían): ${res.data.filas_omitidas_ya_existian}
-` +
-      (res.data.estudiantes_promovidos ? `Estudiantes promovidos: ${res.data.estudiantes_promovidos}\nDivisiones actualizadas: ${res.data.divisiones_actualizadas}` : 'Estudiantes promovidos: 0') +
-      `\nRevisión manual (rosado): ${res.data.estudiantes_revision_manual || 0}`
+    // Si hay estudiantes en 3º, pedir orientación para su pase a 4º
+    const orientaciones = await collectOrientationsForRolloverIfNeeded_(origen);
+    if (orientaciones === null) return; // canceló
+
+    const res = await apiCall('rolloverCycle', {
+      ciclo_origen: origen,
+      ciclo_destino: destino,
+      usuario: 'web',
+      update_students: true,
+      orientaciones
+    });
+
+    alert(
+      `Rollover listo ✅\n\n` +
+      `Origen: ${res.data.ciclo_origen} (existe: ${res.data.origen_existe})\n` +
+      `Destino: ${res.data.ciclo_destino}\n` +
+      `Filas creadas: ${res.data.filas_creadas}\n` +
+      `Omitidas (ya existían): ${res.data.filas_omitidas_ya_existian}\n` +
+      `Estudiantes promovidos: ${res.data.estudiantes_promovidos || 0}\n` +
+      `Revisión manual (rosado): ${res.data.estudiantes_revision_manual || 0}`
     );
 
     await loadCycles();
     $('cicloSelect').value = destino;
     state.ciclo = destino;
 
+    await loadStudents();
     if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
   }
   catch (err) {
@@ -910,6 +984,7 @@ $('btnRollover').onclick = async () => {
     setBtnLoading($('btnRollover'), false);
   }
 };
+
 
 $('studentSearch').oninput = () => renderStudents(state.students);
 

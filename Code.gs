@@ -269,21 +269,34 @@ function rolloverCycle_(payload) {
 
   // Por pedido: por defecto SI promociona estudiantes (anio_actual +1)
   const updateStudents = (payload.update_students !== undefined) ? toBool_(payload.update_students) : true;
-  const updateDivision = (payload.update_division !== undefined) ? toBool_(payload.update_division) : true;
+
+  // Orientaciones: mapping { id_estudiante: "Orientación elegida" } (solo 3º→4º)
+  const orientByStudent = payload.orientaciones || payload.orientacion_por_estudiante || {};
 
   if (!origen) throw new Error('Falta payload.ciclo_origen');
   if (!destino) throw new Error('Falta payload.ciclo_destino');
   if (origen === destino) throw new Error('ciclo_origen y ciclo_destino no pueden ser iguales');
 
+  // Asegurar columna en Estudiantes
+  ensureEstudiantesColumns_(['orientacion']);
+
   const cycles = getCycles_();
   const origenExiste = cycles.indexOf(origen) !== -1;
 
-  const students = getStudentList_({}); // activos
-  const catalog = getCatalog_();
+  const students = getStudentList_({}); // activos (con orientación actual)
+  const catalogAll = getCatalog_();
+
+  // Helper: orientación que va a tener el estudiante en el ciclo destino (si 3º→4º la trae el payload)
+  const nextOrientBySid = {};
+  students.forEach(s => {
+    const y = Number(s.anio_actual || '');
+    if (y === 3) nextOrientBySid[s.id_estudiante] = String(orientByStudent[s.id_estudiante] || s.orientacion || '').trim();
+    else nextOrientBySid[s.id_estudiante] = String(s.orientacion || '').trim();
+  });
 
   const sh = sheet_(SHEETS.ESTADO);
 
-  // --- 1) Crear filas faltantes del ciclo destino (como antes) ---
+  // --- 1) Crear filas faltantes del ciclo destino SOLO para materias relevantes ---
   let tmp = getValues_(sh);
   let headers = tmp.headers;
   let rows = tmp.rows;
@@ -295,6 +308,10 @@ function rolloverCycle_(payload) {
   const approvedMap = {}; // key sid|mid -> true
   const regularMap = {};  // key sid|mid -> true (alguna vez cursó regular)
   const existsDest = {};  // key sid|mid -> true
+
+  const catById = {};
+  const catYearByMid = {};
+  catalogAll.forEach(m => { catById[m.id_materia] = m; catYearByMid[m.id_materia] = Number(m.anio||''); });
 
   rows.forEach(r => {
     const ciclo = String(r[idx['ciclo_lectivo']] || '').trim();
@@ -331,6 +348,11 @@ function rolloverCycle_(payload) {
 
   students.forEach(s => {
     const sid = s.id_estudiante;
+    const stForCatalog = { id_estudiante: sid, orientacion: nextOrientBySid[sid] || '' };
+
+    // Materias relevantes por orientación (1º-3º comunes; desde 4º según orientación)
+    const catalog = catalogAll.filter(m => materiaAppliesToStudent_(m, stForCatalog));
+
     catalog.forEach(m => {
       const mid = m.id_materia;
       const key = sid + '|' + mid;
@@ -368,10 +390,10 @@ function rolloverCycle_(payload) {
     sh.getRange(sh.getLastRow() + 1, 1, newRows.length, headers.length).setValues(newRows);
   }
 
-  // --- 2) Promoción de estudiantes (anio_actual +1) ---
+  // --- 2) Promoción de estudiantes (anio_actual +1) + orientación 3º→4º ---
   let promoInfo = null;
   if (updateStudents) {
-    promoInfo = updateStudentsOnRollover_(usuario);
+    promoInfo = updateStudentsOnRollover_(usuario, orientByStudent);
   }
 
   // --- 3) Ajuste automático del plan anual en el ciclo destino (12 regular + 4 intensifica) ---
@@ -381,7 +403,7 @@ function rolloverCycle_(payload) {
   rows = tmp.rows;
   idx = headerMap_(headers);
 
-  // Mapas auxiliares
+  // Set activos + grados (antes de promo: students trae el grado "viejo")
   const activeSet = {};
   const oldYearByStudent = {};
   const newGradeByStudent = {};
@@ -392,20 +414,7 @@ function rolloverCycle_(payload) {
     newGradeByStudent[s.id_estudiante] = (!isNaN(oldYear) && oldYear > 0) ? Math.min(oldYear + 1, 6) : null;
   });
 
-  const catalogByYear = {};
-  const catalogYearByMid = {};
-  catalog.forEach(m => {
-    const y = Number(m.anio || '');
-    if (isNaN(y) || y <= 0) return;
-    if (!catalogByYear[y]) catalogByYear[y] = [];
-    const mid = String(m.id_materia);
-    catalogByYear[y].push(mid);
-    catalogYearByMid[mid] = y;
-  });
-
-  // Adeudadas del ciclo origen (solo si existe)
-  // Solo cuentan adeudadas de años que el/la estudiante ya debía haber cursado en el ciclo origen
-  // (evita que materias de años futuros se consideren “adeudadas”).
+  // Adeudadas del ciclo origen (solo si existe) + filtradas por orientación
   const owedByStudent = {};
   if (origenExiste) {
     rows.forEach(r => {
@@ -418,13 +427,17 @@ function rolloverCycle_(payload) {
       const mid = String(r[idx['id_materia']] || '').trim();
       if (!mid) return;
 
+      const mat = catById[mid] || { id_materia: mid, anio: catYearByMid[mid], orientacion: '' };
+      const stForMat = { id_estudiante: sid, orientacion: nextOrientBySid[sid] || '' };
+      if (!materiaAppliesToStudent_(mat, stForMat)) return;
+
       const cond = String(r[idx['condicion_academica']] || '').trim().toLowerCase();
       if (cond !== 'adeuda') return;
 
       const oldYear = oldYearByStudent[sid];
-      const matYear = catalogYearByMid[mid] || null;
+      const matYear = catYearByMid[mid] || null;
 
-      // Si no tenemos año de la materia, la dejamos contar (mejor no ocultar adeudas reales)
+      // Evita que materias de años futuros se consideren “adeudadas”.
       const isFutureInOrigen = (oldYear && matYear && matYear > oldYear);
       if (isFutureInOrigen) return;
 
@@ -433,7 +446,7 @@ function rolloverCycle_(payload) {
     });
   }
 
-// Map row index (destino) for fast updates
+  // Map row index (destino) for fast updates
   const destRowIndex = {}; // sid|mid -> i
   rows.forEach((r, i) => {
     const c = String(r[idx['ciclo_lectivo']] || '').trim();
@@ -445,8 +458,8 @@ function rolloverCycle_(payload) {
     destRowIndex[sid + '|' + mid] = i;
   });
 
-  // Primero: resetear campos del destino para estudiantes activos (para evitar basura previa)
-  // Además: materias de años FUTUROS quedan como "proximos_anos".
+  // Resetear campos del destino para estudiantes activos.
+  // Materias de años FUTUROS quedan como "proximos_anos".
   rows.forEach((r, i) => {
     const c = String(r[idx['ciclo_lectivo']] || '').trim();
     if (c !== destino) return;
@@ -457,7 +470,7 @@ function rolloverCycle_(payload) {
     const mid = String(r[idx['id_materia']] || '').trim();
     const newYear = newGradeByStudent[sid];
 
-    const matYear = catalogYearByMid[mid] || null;
+    const matYear = catYearByMid[mid] || null;
     const isFuture = (newYear && matYear && matYear > newYear);
 
     if (idx['situacion_actual'] !== undefined) r[idx['situacion_actual']] = isFuture ? 'proximos_anos' : 'no_cursa_otro_motivo';
@@ -467,7 +480,6 @@ function rolloverCycle_(payload) {
     if (idx['fecha_actualizacion'] !== undefined) r[idx['fecha_actualizacion']] = now;
     if (idx['usuario'] !== undefined) r[idx['usuario']] = usuario;
   });
-
 
   let revisionManualCount = 0;
 
@@ -488,7 +500,11 @@ function rolloverCycle_(payload) {
     const newYear = newGradeByStudent[sid];
     if (!newYear) return;
 
-    const newYearMats = (catalogByYear[newYear] || []).slice();
+    const stForMat = { id_estudiante: sid, orientacion: nextOrientBySid[sid] || '' };
+
+    // Materias del nuevo año (filtradas por orientación si aplica)
+    const newYearMats = catalogAll.filter(m => Number(m.anio||'') === newYear && materiaAppliesToStudent_(m, stForMat)).map(m => m.id_materia);
+
     const owedAll = (owedByStudent[sid] || []).slice();
 
     // Tope: intensifica máx 4 adeudadas
@@ -501,15 +517,12 @@ function rolloverCycle_(payload) {
     let overflowOwed = [];
 
     if (newYear === 6) {
-      // Regla especial: 6to tiene prioridad
+      // 6to tiene prioridad: primero todas las de 6to, luego recursa hasta 12
       primera = newYearMats.slice();
-
-      // Tope 12 (raro que 6to supere 12, pero lo respetamos igual)
       if (primera.length > 12) {
         droppedNew = primera.slice(12);
         primera = primera.slice(0, 12);
       }
-
       const slots = 12 - primera.length;
       if (slots > 0) {
         recursa = remainingOwed.slice(0, slots);
@@ -518,8 +531,7 @@ function rolloverCycle_(payload) {
         overflowOwed = remainingOwed.slice();
       }
     } else {
-      // Base: cursa todo el año por 1ra vez, pero:
-      // si hay muchas adeudadas, las recursa y puede sacar materias de 1ra vez por tope 12.
+      // 2º-5º: prioridad recursadas (adeudadas) y se completa con 1ra vez hasta 12
       const recMax = Math.min(remainingOwed.length, 12);
       recursa = remainingOwed.slice(0, recMax);
       overflowOwed = remainingOwed.slice(recMax);
@@ -550,15 +562,15 @@ function rolloverCycle_(payload) {
     ciclo_destino: destino,
     origen_existe: origenExiste,
     estudiantes_procesados: students.length,
-    materias_catalogo: catalog.length,
+    materias_catalogo: catalogAll.length,
     filas_creadas: created,
     filas_omitidas_ya_existian: skipped,
     estudiantes_promovidos: promoInfo ? promoInfo.estudiantes_actualizados : 0,
-    divisiones_actualizadas: promoInfo ? promoInfo.division_actualizada : 0,
     estudiantes_omitidos_promo: promoInfo ? promoInfo.omitidos : 0,
     estudiantes_revision_manual: revisionManualCount
   };
 }
+
 
 
 
@@ -572,24 +584,71 @@ function parseYear_(v) {
   const n = Number(m[0]);
   return isNaN(n) ? NaN : n;
 }
+// ======== Orientaciones & compatibilidad de materias ========
+function normOrient_(v){
+  const s = String(v || '').trim();
+  if (!s) return '';
+  return s.toLowerCase();
+}
+function splitOrients_(v){
+  const raw = String(v || '').trim();
+  if (!raw) return [];
+  return raw.split(/[;,|\/]+/).map(x => x.trim()).filter(Boolean);
+}
+function orientMatches_(matOrient, studentOrient){
+  const so = normOrient_(studentOrient);
+  if (!so) return false;
+  const mo = String(matOrient || '').trim();
+  if (!mo) return true; // vacío = común
+  const moNorm = mo.toLowerCase();
+  if (moNorm === 'comun' || moNorm === 'común' || moNorm === 'general') return true;
+  const list = splitOrients_(moNorm);
+  if (!list.length) return moNorm === so;
+  return list.some(x => x.toLowerCase() === so);
+}
+
+// Regla: 1º-3º son comunes (no dependen de orientación).
+// Desde 4º, se incluyen materias cuya orientación coincide con la del estudiante (o vacía/común).
+function materiaAppliesToStudent_(mat, student){
+  const y = Number(mat && mat.anio || '');
+  if (!isNaN(y) && y > 0 && y <= 3) return true;
+  const stOrient = student ? (student.orientacion || '') : '';
+  return orientMatches_(mat ? mat.orientacion : '', stOrient);
+}
+
+function ensureEstudiantesColumn_(colName){
+  const sh = sheet_(SHEETS.ESTUDIANTES);
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(h => String(h).trim());
+  const idx = headers.indexOf(colName);
+  if (idx !== -1) return idx;
+  const newCol = headers.length + 1;
+  sh.getRange(1, newCol).setValue(colName);
+  return newCol - 1;
+}
+function ensureEstudiantesColumns_(names){
+  (names || []).forEach(n => ensureEstudiantesColumn_(n));
+}
+
 
 function getCatalog_() {
   const sh = sheet_(SHEETS.CATALOGO);
   const { headers, rows } = getValues_(sh);
   const idx = headerMap_(headers);
 
-  // Esperados
-  // id_materia, nombre, anio, es_troncal
+  // Esperados:
+  // id_materia, nombre, anio, es_troncal, orientacion (col E)
   return rows
     .filter(r => r.some(c => String(c).trim() !== ''))
     .map(r => ({
       id_materia: String(r[idx['id_materia']] || '').trim(),
       nombre: String(r[idx['nombre']] || '').trim(),
       anio: parseYear_(r[idx['anio']]),
-      es_troncal: toBool_(r[idx['es_troncal']])
+      es_troncal: toBool_(r[idx['es_troncal']]),
+      orientacion: String(r[idx['orientacion']] || '').trim()
     }))
     .filter(m => m.id_materia);
 }
+
 
 function getStudentList_(payload) {
   payload = payload || {};
@@ -609,8 +668,10 @@ function getStudentList_(payload) {
       apellido: String(r[idx['apellido']] || '').trim(),
       nombre: String(r[idx['nombre']] || '').trim(),
       anio_actual: Number(r[idx['anio_actual']] || ''),
-      division: String(r[idx['division']] || '').trim(),
-      turno: String(r[idx['turno']] || '').trim(),
+      // Se mantienen por compatibilidad pero ya no se usan
+      division: (idx['division'] !== undefined) ? String(r[idx['division']] || '').trim() : '',
+      turno: (idx['turno'] !== undefined) ? String(r[idx['turno']] || '').trim() : '',
+      orientacion: (idx['orientacion'] !== undefined) ? String(r[idx['orientacion']] || '').trim() : '',
       activo: (idx['activo'] !== undefined) ? toBool_(r[idx['activo']]) : true,
       observaciones: (idx['observaciones'] !== undefined) ? String(r[idx['observaciones']] || '').trim() : ''
     }))
@@ -620,10 +681,18 @@ function getStudentList_(payload) {
   // Si no hay ciclo, devolvemos sin flags
   if (!ciclo) return students;
 
-  // Flags por ciclo: cierre completo + revisión manual (rosado)
+  // Catálogo para filtrar materias por orientación
+  const catalog = getCatalog_();
+  const catById = {};
+  catalog.forEach(m => { catById[m.id_materia] = m; });
+
+  // Flags por ciclo: cierre completo + revisión manual (rosado) + adeudadas para riesgo
   const estadoSh = sheet_(SHEETS.ESTADO);
   const est = getValues_(estadoSh);
   const eidx = headerMap_(est.headers);
+
+  const byStudent = {};
+  students.forEach(s => { byStudent[s.id_estudiante] = s; });
 
   const need = {};   // sid -> total materias a cerrar
   const done = {};   // sid -> cerradas
@@ -635,13 +704,19 @@ function getStudentList_(payload) {
     if (c !== ciclo) return;
 
     const sid = String(r[eidx['id_estudiante']] || '').trim();
-    if (!sid) return;
+    if (!sid || !byStudent[sid]) return;
+
+    const mid = String(r[eidx['id_materia']] || '').trim();
+    const mat = catById[mid] || { id_materia: mid, anio: parseYear_(r[eidx['anio']]), orientacion: String(r[eidx['orientacion']] || '') };
+
+    // No contar materias fuera de la orientación del estudiante (desde 4º)
+    if (!materiaAppliesToStudent_(mat, byStudent[sid])) return;
 
     const sit = String(r[eidx['situacion_actual']] || '').trim();
     const cond = String(r[eidx['condicion_academica']] || '').trim().toLowerCase();
     const res = (eidx['resultado_cierre'] !== undefined) ? String(r[eidx['resultado_cierre']] || '').trim() : '';
 
-    // Conteo de adeudadas para filtro "en riesgo" (impacta aunque aún no se haya ejecutado cierre global)
+    // Conteo de adeudadas para filtro "en riesgo"
     const resLc = String(res || '').trim().toLowerCase();
     const isAdeuda = (cond === 'adeuda') || (resLc === 'no_aprobada' || resLc === 'no aprobada' || resLc === 'no_aprobo' || resLc === 'no' );
     if (isAdeuda && sit !== 'proximos_anos') adeudaCount[sid] = (adeudaCount[sid] || 0) + 1;
@@ -653,7 +728,6 @@ function getStudentList_(payload) {
     }
 
     // Rosado: si tuvo que dejar "no cursa por tope" alguna materia nunca cursada
-    // (señal de ajuste por exceso / prioridad adeudadas)
     if (sit === 'no_cursa_por_tope') {
       const nunca = (eidx['nunca_cursada'] !== undefined) ? toBool_(r[eidx['nunca_cursada']]) : false;
       if (nunca) needsReview[sid] = true;
@@ -675,9 +749,15 @@ function getStudentList_(payload) {
 }
 
 
+
 // Actualiza anio_actual (+1) y, si se puede, la división en Estudiantes.
 // Se usa opcionalmente en rollover.
-function updateStudentsOnRollover_(usuario) {
+// Actualiza anio_actual (+1) y guarda orientación (solo en 3º→4º) en Estudiantes.
+// Se usa opcionalmente en rollover.
+function updateStudentsOnRollover_(usuario, orientByStudent) {
+  orientByStudent = orientByStudent || {};
+  ensureEstudiantesColumns_(['orientacion']);
+
   const sh = sheet_(SHEETS.ESTUDIANTES);
   const { headers, rows } = getValues_(sh);
   const idx = headerMap_(headers);
@@ -687,7 +767,6 @@ function updateStudentsOnRollover_(usuario) {
 
   let updated = 0;
   let skipped = 0;
-  let divUpdated = 0;
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -704,15 +783,13 @@ function updateStudentsOnRollover_(usuario) {
     const nuevoAnio = Math.min(anio + 1, 6);
     if (nuevoAnio === anio) { skipped++; continue; }
 
-    row[idx['anio_actual']] = nuevoAnio;
-
-    if (idx['division'] !== undefined) {
-      const promo = promoDivision_(row[idx['division']]);
-      if (promo.ok) {
-        row[idx['division']] = promo.value;
-        divUpdated++;
-      }
+    // Guardar orientación SOLO cuando pasa de 3º a 4º
+    if (anio === 3 && nuevoAnio === 4 && idx['orientacion'] !== undefined) {
+      const o = String(orientByStudent[sid] || '').trim();
+      if (o) row[idx['orientacion']] = o;
     }
+
+    row[idx['anio_actual']] = nuevoAnio;
 
     if (idx['observaciones'] !== undefined && usuario) {
       const prev = String(row[idx['observaciones']] || '');
@@ -728,8 +805,9 @@ function updateStudentsOnRollover_(usuario) {
     sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
   }
 
-  return { estudiantes_actualizados: updated, division_actualizada: divUpdated, omitidos: skipped };
+  return { estudiantes_actualizados: updated, omitidos: skipped };
 }
+
 
 
 function getStudentStatus_(payload) {
@@ -745,36 +823,39 @@ function getStudentStatus_(payload) {
   const catalogMap = {};
   catalog.forEach(m => { catalogMap[m.id_materia] = m; });
 
+  // Datos del estudiante (incluye orientación)
+  const students = getStudentList_();
+  const student = students.find(s => s.id_estudiante === idEst) || { id_estudiante: idEst, orientacion: '', anio_actual: 0 };
+
   const sh = sheet_(SHEETS.ESTADO);
   const { headers, rows } = getValues_(sh);
-  const idx = headerMap_(headers);
 
-  // Esperados:
-  // ciclo_lectivo, id_estudiante, id_materia, condicion_academica, nunca_cursada, situacion_actual, motivo_no_cursa, fecha_actualizacion, usuario
   const filtered = rows
     .map(r => ({ r, obj: rowToObj_(headers, r) }))
     .filter(x => String(x.obj['ciclo_lectivo']).trim() === ciclo && String(x.obj['id_estudiante']).trim() === idEst);
 
-  const materias = filtered.map(x => {
-    const idMat = String(x.obj['id_materia'] || '').trim();
-    const cat = catalogMap[idMat] || {};
-    return {
-      id_materia: idMat,
-      nombre: cat.nombre || String(x.obj['nombre'] || '').trim(),
-      anio: cat.anio || Number(x.obj['anio'] || ''),
-      es_troncal: (cat.es_troncal !== undefined) ? cat.es_troncal : toBool_(x.obj['es_troncal']),
-      condicion_academica: String(x.obj['condicion_academica'] || '').trim(),
-      nunca_cursada: toBool_(x.obj['nunca_cursada']),
-      situacion_actual: String(x.obj['situacion_actual'] || '').trim(),
-      motivo_no_cursa: String(x.obj['motivo_no_cursa'] || '').trim(),
-      fecha_actualizacion: x.obj['fecha_actualizacion'] ? new Date(x.obj['fecha_actualizacion']).toISOString() : '',
-      usuario: String(x.obj['usuario'] || '').trim()
-    };
-  });
-
-  // También devolver datos del estudiante
-  const students = getStudentList_();
-  const student = students.find(s => s.id_estudiante === idEst) || { id_estudiante: idEst };
+  // Filtrar por orientación (desde 4º) y dejar solo materias relevantes
+  const materias = filtered
+    .map(x => {
+      const idMat = String(x.obj['id_materia'] || '').trim();
+      const cat = catalogMap[idMat] || {};
+      return {
+        id_materia: idMat,
+        nombre: cat.nombre || String(x.obj['nombre'] || '').trim(),
+        anio: cat.anio || Number(x.obj['anio'] || ''),
+        es_troncal: (cat.es_troncal !== undefined) ? cat.es_troncal : toBool_(x.obj['es_troncal']),
+        orientacion: (cat.orientacion !== undefined) ? cat.orientacion : String(x.obj['orientacion'] || '').trim(),
+        condicion_academica: String(x.obj['condicion_academica'] || '').trim(),
+        nunca_cursada: toBool_(x.obj['nunca_cursada']),
+        situacion_actual: String(x.obj['situacion_actual'] || '').trim(),
+        motivo_no_cursa: String(x.obj['motivo_no_cursa'] || '').trim(),
+        resultado_cierre: String(x.obj['resultado_cierre'] || '').trim(),
+        ciclo_cerrado: toBool_(x.obj['ciclo_cerrado']),
+        fecha_actualizacion: x.obj['fecha_actualizacion'] ? new Date(x.obj['fecha_actualizacion']).toISOString() : '',
+        usuario: String(x.obj['usuario'] || '').trim()
+      };
+    })
+    .filter(m => materiaAppliesToStudent_(m, student));
 
   return {
     ciclo_lectivo: ciclo,
@@ -782,6 +863,7 @@ function getStudentStatus_(payload) {
     materias: materias
   };
 }
+
 
 function saveStudentStatus_(payload) {
   // Asegurar columnas para cierre
@@ -895,7 +977,11 @@ function syncCatalogRows_(payload) {
   if (!ciclo) throw new Error('Falta payload.ciclo_lectivo');
   if (!idEst) throw new Error('Falta payload.id_estudiante');
 
-  const catalog = getCatalog_();
+  // Estudiante (para orientación)
+  const students = getStudentList_();
+  const student = students.find(s => s.id_estudiante === idEst) || { id_estudiante: idEst, anio_actual: 0, orientacion: '' };
+
+  const catalog = getCatalog_().filter(m => materiaAppliesToStudent_(m, student));
   const sh = sheet_(SHEETS.ESTADO);
   const { headers, rows } = getValues_(sh);
   const idx = headerMap_(headers);
@@ -938,7 +1024,11 @@ function syncCatalogRows_(payload) {
 
 
 
+
 // Devuelve resumen por división: cantidad de estudiantes en riesgo (>= umbral adeudadas)
+// payload: { ciclo_lectivo, umbral?:number }
+// Devuelve resumen por AÑO: cantidad de estudiantes en riesgo (>= umbral adeudadas)
+// (Se mantiene el nombre por compatibilidad con el frontend. Ya no se usan divisiones.)
 // payload: { ciclo_lectivo, umbral?:number }
 function getDivisionRiskSummary_(payload) {
   const ciclo = String(payload.ciclo_lectivo || '').trim();
@@ -949,6 +1039,10 @@ function getDivisionRiskSummary_(payload) {
   const students = getStudentList_(); // activos
   const byId = {};
   students.forEach(s => { byId[s.id_estudiante] = s; });
+
+  const catalog = getCatalog_();
+  const catById = {};
+  catalog.forEach(m => { catById[m.id_materia] = m; });
 
   const sh = sheet_(SHEETS.ESTADO);
   const { headers, rows } = getValues_(sh);
@@ -962,16 +1056,22 @@ function getDivisionRiskSummary_(payload) {
     if (rCiclo !== ciclo) return;
     const sid = String(r[idx['id_estudiante']] || '').trim();
     if (!sid || !byId[sid]) return;
+
+    const mid = String(r[idx['id_materia']] || '').trim();
+    const mat = catById[mid] || { id_materia: mid, anio: parseYear_(r[idx['anio']]), orientacion: String(r[idx['orientacion']] || '') };
+
+    if (!materiaAppliesToStudent_(mat, byId[sid])) return;
+
     hasAny[sid] = true;
     const cond = String(r[idx['condicion_academica']] || '').trim().toLowerCase();
     if (cond === 'adeuda') adeudaCount[sid] = (adeudaCount[sid] || 0) + 1;
   });
 
-  // Group by division
-  const groups = {}; // key division|turno -> stats
+  // Group by año
+  const groups = {}; // anio -> stats
   students.forEach(s => {
-    const key = `${s.division || '—'}|${s.turno || ''}`;
-    if (!groups[key]) groups[key] = { division: s.division || '—', turno: s.turno || '', total_estudiantes: 0, en_riesgo: 0, sin_datos: 0 };
+    const key = String(s.anio_actual || '—');
+    if (!groups[key]) groups[key] = { anio: key, total_estudiantes: 0, en_riesgo: 0, sin_datos: 0 };
     groups[key].total_estudiantes++;
     const cnt = adeudaCount[s.id_estudiante] || 0;
     const risk = cnt >= umbral;
@@ -979,9 +1079,10 @@ function getDivisionRiskSummary_(payload) {
     if (!hasAny[s.id_estudiante]) groups[key].sin_datos++;
   });
 
-  const result = Object.values(groups).sort((a,b) => String(a.division).localeCompare(String(b.division)) || String(a.turno).localeCompare(String(b.turno)));
+  const result = Object.values(groups).sort((a,b) => Number(a.anio||0) - Number(b.anio||0));
   return { ciclo_lectivo: ciclo, umbral, divisiones: result };
 }
+
 
 // Cierre de ciclo: aplica resultado_cierre a condicion_academica (por estudiante o global)
 // payload: { ciclo_lectivo, id_estudiante?:string, usuario?:string, marcar_cerrado?:boolean }

@@ -23,7 +23,7 @@
         <option value="2024">2024</option>
       </select>
       <button id="btnRollover" class="btn ghost">Crear ciclo nuevo</button>
-      <button id="btnDivisionSummary" class="btn ghost">Resumen por división</button>
+      <button id="btnDivisionSummary" class="btn ghost">Resumen por año</button>
       <button id="btnRefresh" class="btn ghost">Actualizar</button>
       <button id="btnLogout" class="btn ghost">Cambiar clave</button>
     </div>
@@ -54,10 +54,10 @@
       <aside id="studentsPanel" class="card">
         <div class="aside-head">
           <h2>Estudiantes</h2>
-          <input id="studentSearch" class="input" placeholder="Buscar por nombre, división o ID…" />
+          <input id="studentSearch" class="input" placeholder="Buscar por nombre o ID…" />
           <div class="filters">
             <select id="courseFilter" class="select">
-              <option value="">Todos los cursos</option>
+              <option value="">Todos los años</option>
             </select>
             <label class="chk"><input type="checkbox" id="onlyPending" /> Faltan cargar</label>
             <label class="chk"><input type="checkbox" id="onlyRisk" /> En riesgo</label>
@@ -183,25 +183,24 @@
   </main>
 
 
-    <!-- Modal: Resumen por división -->
+    <!-- Modal: Resumen por año -->
     <div id="modalSummary" class="modal hidden" aria-hidden="true">
       <div class="modal-backdrop" id="modalSummaryBackdrop"></div>
       <div class="modal-card">
         <div class="modal-head">
-          <h2>Resumen por división</h2>
+          <h2>Resumen por año</h2>
           <button id="btnCloseSummary" class="btn ghost">Cerrar</button>
         </div>
         <p class="muted">
-          Cuenta estudiantes en <b>riesgo</b> al finalizar el ciclo: <b>5 o más</b> materias con condición <b>ADEUDA</b> en el ciclo seleccionado.
-        </p>
+          Cuenta estudiantes en <b>riesgo</b> (≥ <b>5</b> materias en condición <b>ADEUDA</b>) en el ciclo seleccionado, agrupado por <b>año</b>.</p>
         <div class="table-wrap">
           <table class="table">
             <thead>
               <tr>
-                <th>División</th>
-                <th>Turno</th>
+                <th>Año</th>
                 <th>Total estudiantes</th>
-                <th>En riesgo (≥5 adeudadas)</th>
+                <th>En riesgo (≥5)</th>
+                <th>Sin datos</th>
               </tr>
             </thead>
             <tbody id="summaryTbody"></tbody>
@@ -251,7 +250,35 @@
       </div>
     </div>
 
-  <footer class="footer muted">
+  
+    <!-- Orientación (3º → 4º) -->
+    <div id="modalOrient" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" id="modalOrientBackdrop"></div>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2>Orientación (3º → 4º)</h2>
+          <button id="btnOrientCancel" class="btn ghost">Cancelar</button>
+        </div>
+        <p class="muted">
+          Elegí la orientación para cada estudiante de <b>3º</b> que pasa a <b>4º</b>. Esta elección se guarda en la pestaña <b>Estudiantes</b> (columna <b>orientacion</b>) y define qué materias aparecen desde <b>4º</b>.
+        </p>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Estudiante</th>
+                <th>ID</th>
+                <th>Orientación</th>
+              </tr>
+            </thead>
+            <tbody id="orientTbody"></tbody>
+          </table>
+        </div>
+        <div class="row end">
+          <button id="btnOrientContinue" class="btn primary">Continuar</button>
+        </div>
+      </div>
+    </div><footer class="footer muted">
     Hecho para seguimiento de trayectorias · GitHub Pages + Google Sheets
   </footer>
 
