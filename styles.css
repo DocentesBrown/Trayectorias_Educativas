@@ -261,3 +261,14 @@ body{
   gap:10px;
 }
 .row.gap{gap:10px; flex-wrap:wrap}
+
+
+/* Materias aprobadas: fila gris suave + controles bloqueados */
+.table tr.row-approved td{
+  background: rgba(15, 23, 42, 0.05);
+}
+.select:disabled{
+  background: rgba(15, 23, 42, 0.04);
+  color: var(--muted);
+  cursor: not-allowed;
+}

@@ -252,36 +252,60 @@ function renderEditorTable(materias) {
   const sorted = materias.slice().sort((a,b) => (a.anio||0)-(b.anio||0) || String(a.nombre).localeCompare(String(b.nombre)));
 
   sorted.forEach(m => {
-    const tr = document.createElement('tr');    const condicion = m.condicion_academica ? `<span class="badge">${escapeHtml(m.condicion_academica.toUpperCase())}</span>` : '<span class="muted">—</span>';
+    const tr = document.createElement('tr');
+    const isAprobada = String(m.condicion_academica || '').trim().toLowerCase() === 'aprobada';
+    if (isAprobada) tr.classList.add('row-approved');
+
+    const condicion = m.condicion_academica ? `<span class="badge">${escapeHtml(m.condicion_academica.toUpperCase())}</span>` : '<span class="muted">—</span>';
     const nunca = m.nunca_cursada ? '<span class="badge">SÍ</span>' : '<span class="muted">NO</span>';
 
     const sel = document.createElement('select');
     sel.className = 'select';
-    SITUACIONES.forEach(o => {
-      const opt = document.createElement('option');
-      opt.value = o.value;
-      opt.textContent = o.label;
-      if ((m.situacion_actual || '') === o.value) opt.selected = true;
-      sel.appendChild(opt);
-    });
 
-    sel.onchange = () => {
-      setMateriaField(m.id_materia, 'situacion_actual', sel.value);
-    };
+    if (isAprobada) {
+      sel.disabled = true;
+      const opt = document.createElement('option');
+      opt.value = 'no_cursa_aprobada';
+      opt.textContent = 'No cursa (aprobada)';
+      opt.selected = true;
+      sel.appendChild(opt);
+    } else {
+      SITUACIONES.forEach(o => {
+        const opt = document.createElement('option');
+        opt.value = o.value;
+        opt.textContent = o.label;
+        if ((m.situacion_actual || '') === o.value) opt.selected = true;
+        sel.appendChild(opt);
+      });
+
+      sel.onchange = () => {
+        setMateriaField(m.id_materia, 'situacion_actual', sel.value);
+      };
+    }
 
     const selCierre = document.createElement('select');
     selCierre.className = 'select';
-    CIERRE_RESULTADOS.forEach(o => {
-      const opt = document.createElement('option');
-      opt.value = o.value;
-      opt.textContent = o.label;
-      if ((m.resultado_cierre || '') === o.value) opt.selected = true;
-      selCierre.appendChild(opt);
-    });
 
-    selCierre.onchange = () => {
-      setMateriaField(m.id_materia, 'resultado_cierre', selCierre.value);
-    };
+    if (isAprobada) {
+      selCierre.disabled = true;
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '— (aprobada)';
+      opt.selected = true;
+      selCierre.appendChild(opt);
+    } else {
+      CIERRE_RESULTADOS.forEach(o => {
+        const opt = document.createElement('option');
+        opt.value = o.value;
+        opt.textContent = o.label;
+        if ((m.resultado_cierre || '') === o.value) opt.selected = true;
+        selCierre.appendChild(opt);
+      });
+
+      selCierre.onchange = () => {
+        setMateriaField(m.id_materia, 'resultado_cierre', selCierre.value);
+      };
+    }
 
     tr.innerHTML = `
       <td>${escapeHtml(m.nombre || m.id_materia)} <div class="muted">${escapeHtml(m.id_materia)}</div></td>
