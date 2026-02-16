@@ -546,6 +546,18 @@ function rolloverCycle_(payload) {
 }
 
 
+
+function parseYear_(v) {
+  // Acepta números o strings tipo "3", "3°", "3ro", "Año 3"
+  if (v === null || v === undefined) return NaN;
+  const s = String(v).trim();
+  if (!s) return NaN;
+  const m = s.match(/\d+/);
+  if (!m) return NaN;
+  const n = Number(m[0]);
+  return isNaN(n) ? NaN : n;
+}
+
 function getCatalog_() {
   const sh = sheet_(SHEETS.CATALOGO);
   const { headers, rows } = getValues_(sh);
@@ -558,7 +570,7 @@ function getCatalog_() {
     .map(r => ({
       id_materia: String(r[idx['id_materia']] || '').trim(),
       nombre: String(r[idx['nombre']] || '').trim(),
-      anio: Number(r[idx['anio']] || ''),
+      anio: parseYear_(r[idx['anio']]),
       es_troncal: toBool_(r[idx['es_troncal']])
     }))
     .filter(m => m.id_materia);
@@ -617,7 +629,7 @@ function getStudentList_(payload) {
     // Conteo de adeudadas para filtro "en riesgo" (impacta aunque aún no se haya ejecutado cierre global)
     const resLc = String(res || '').trim().toLowerCase();
     const isAdeuda = (cond === 'adeuda') || (resLc === 'no_aprobada' || resLc === 'no aprobada' || resLc === 'no_aprobo' || resLc === 'no' );
-    if (isAdeuda) adeudaCount[sid] = (adeudaCount[sid] || 0) + 1;
+    if (isAdeuda && sit !== 'no_cursa_por_edad') adeudaCount[sid] = (adeudaCount[sid] || 0) + 1;
 
     // Materias a cerrar: las que cursó/recursó/intensificó en este ciclo
     if (sit === 'cursa_primera_vez' || sit === 'recursa' || sit === 'intensifica') {

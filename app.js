@@ -725,25 +725,6 @@ async function saveChanges() {
   }
 }
 
-async function syncCatalogRows() {
-  if (!state.selectedStudentId) return;
-
-  $('btnSync').disabled = true;
-  try {
-    const res = await apiCall('syncCatalogRows', {
-      ciclo_lectivo: state.ciclo,
-      id_estudiante: state.selectedStudentId,
-      usuario: 'web'
-    });
-    const added = res.data.added || 0;
-    renderStudent(res.data.status);
-    alert(added ? `Listo: se agregaron ${added} materias faltantes.` : 'No había materias faltantes.');
-  } catch (err) {
-    alert('Error: ' + err.message);
-  } finally {
-    $('btnSync').disabled = false;
-  }
-}
 
 function wireTabs() {
   const tabs = document.querySelectorAll('.tab');
@@ -885,9 +866,7 @@ $('cicloSelect').onchange = async () => {
   };
 
   $('btnSave').onclick = saveChanges;
-  $('btnSync').onclick = syncCatalogRows;
-
-  $('btnAutoAdjust').onclick = autoAdjustTope;
+    $('btnAutoAdjust').onclick = autoAdjustTope;
   
   $('btnCopyFamily').onclick = async () => {
     try {

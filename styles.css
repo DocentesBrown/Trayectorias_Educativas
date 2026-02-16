@@ -336,3 +336,23 @@ body{
 .item.risk{
   border-left: 4px solid var(--red);
 }
+
+
+@media (min-width: 980px){
+  .aside-head .filters{
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+  .aside-head .filters .select{
+    max-width: 220px;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  .aside-head .filters .chk{
+    font-size: 12.5px;
+    white-space: nowrap;
+  }
+  .aside-head #studentSearch{
+    padding: 10px 12px;
+  }
+}
