@@ -23,6 +23,7 @@
         <option value="2024">2024</option>
       </select>
       <button id="btnRollover" class="btn ghost">Crear ciclo nuevo</button>
+      <button id="btnDivisionSummary" class="btn ghost">Resumen por división</button>
       <button id="btnRefresh" class="btn ghost">Actualizar</button>
       <button id="btnLogout" class="btn ghost">Cambiar clave</button>
     </div>
@@ -134,7 +135,10 @@
               Elegí la situación actual de cada materia. La app valida: <b>12</b> regular (1ra vez + recursa) y <b>4</b> intensificación (no cuenta en las 12).
               En caso de exceso de 12, la normativa prioriza materias <b>nunca cursadas</b>.
             </p>
-            <button id="btnAutoAdjust" class="btn ghost">Ajuste automático (prioridad nunca cursadas)</button>
+            <div class="row gap">
+              <button id="btnAutoAdjust" class="btn ghost">Ajuste automático (prioridad nunca cursadas)</button>
+              <button id="btnCloseStudent" class="btn">Cierre de ciclo (este estudiante)</button>
+            </div>
           </div>
 
           <div class="table-wrap">
@@ -166,6 +170,40 @@
       </section>
     </section>
   </main>
+
+
+    <!-- Modal: Resumen por división -->
+    <div id="modalSummary" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" id="modalSummaryBackdrop"></div>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2>Resumen por división</h2>
+          <button id="btnCloseSummary" class="btn ghost">Cerrar</button>
+        </div>
+        <p class="muted">
+          Cuenta estudiantes en <b>riesgo</b> al finalizar el ciclo: <b>5 o más</b> materias con condición <b>ADEUDA</b> en el ciclo seleccionado.
+        </p>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>División</th>
+                <th>Turno</th>
+                <th>Total estudiantes</th>
+                <th>En riesgo (≥5 adeudadas)</th>
+              </tr>
+            </thead>
+            <tbody id="summaryTbody"></tbody>
+          </table>
+        </div>
+        <div class="row end">
+          <button id="btnRefreshSummary" class="btn">Actualizar resumen</button>
+        </div>
+        <div id="summaryMsg" class="msg"></div>
+      </div>
+    </div>
+
+
 
   <footer class="footer muted">
     Hecho para seguimiento de trayectorias · GitHub Pages + Google Sheets

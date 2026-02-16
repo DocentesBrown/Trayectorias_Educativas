@@ -94,7 +94,7 @@ function doGet() {
     ok: true,
     service: 'Trayectorias Backend',
     endpoints: ['POST {apiKey, action, payload}'],
-    actions: ['ping','getCycles','getCatalog','getStudentList','getStudentStatus','saveStudentStatus','syncCatalogRows','rolloverCycle']
+    actions: ['ping','getCycles','getCatalog','getStudentList','getStudentStatus','saveStudentStatus','syncCatalogRows','rolloverCycle','getDivisionRiskSummary','closeCycle']
   }, 200);
 }
 
@@ -130,6 +130,12 @@ function handleRequest_(req) {
 
     case 'rolloverCycle':
       return { ok: true, data: rolloverCycle_(payload) };
+
+    case 'getDivisionRiskSummary':
+      return { ok: true, data: getDivisionRiskSummary_(payload) };
+
+    case 'closeCycle':
+      return { ok: true, data: closeCycle_(payload) };
 
     default:
       return { ok: false, error: 'Acción desconocida: ' + action };
@@ -196,6 +202,42 @@ function isoNow_() {
   return new Date().toISOString();
 }
 
+// Asegura que exista una columna en EstadoPorCiclo. Si no existe, la crea al final.
+function ensureEstadoColumn_(colName) {
+  const sh = sheet_(SHEETS.ESTADO);
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(h => String(h).trim());
+  const idx = headers.indexOf(colName);
+  if (idx !== -1) return idx; // 0-based
+  const newCol = headers.length + 1;
+  sh.getRange(1, newCol).setValue(colName);
+  return newCol - 1;
+}
+
+function ensureEstadoColumns_(names) {
+  (names || []).forEach(n => ensureEstadoColumn_(n));
+}
+
+// Helpers para promo de división (ej: 4°A -> 5°A)
+function promoDivision_(division) {
+  const s = String(division || '').trim();
+  if (!s) return { ok: false, value: s };
+  // Captura un número inicial y el resto (incluye letra)
+  const m = s.match(/^\s*(\d+)\s*(.*)$/);
+  if (!m) return { ok: false, value: s };
+  const n = Number(m[1]);
+  if (isNaN(n)) return { ok: false, value: s };
+  const rest = (m[2] || '').trim();
+  const next = n + 1;
+  // Mantener símbolo de grado si estaba presente
+  const hasDegree = /°/.test(s);
+  const sep = rest ? '' : '';
+  const deg = hasDegree ? '°' : '';
+  // Si rest ya empieza con °, no duplicar
+  let cleanedRest = rest;
+  if (cleanedRest.startsWith('°')) cleanedRest = cleanedRest.slice(1).trim();
+  return { ok: true, value: `${next}${deg}${cleanedRest ? cleanedRest : ''}`.replace(/\s+/g,' ').trim() };
+}
+
 // ======== Actions ========
 
 function getCycles_() {
@@ -218,12 +260,14 @@ function getCycles_() {
  * - nunca_cursada: TRUE si nunca tuvo cursada regular (cursa_primera_vez o recursa) y no está aprobada.
  * - situacion_actual: se resetea a 'no_cursa_otro_motivo' (neutral).
  *
- * payload: {ciclo_origen, ciclo_destino, usuario}
+ * payload: {ciclo_origen, ciclo_destino, usuario, update_students?:boolean, update_division?:boolean}
  */
 function rolloverCycle_(payload) {
   const origen = String(payload.ciclo_origen || '').trim();
   const destino = String(payload.ciclo_destino || '').trim();
   const usuario = String(payload.usuario || 'rollover').trim();
+  const updateStudents = (payload.update_students !== undefined) ? toBool_(payload.update_students) : false;
+  const updateDivision = (payload.update_division !== undefined) ? toBool_(payload.update_division) : true;
 
   if (!origen) throw new Error('Falta payload.ciclo_origen');
   if (!destino) throw new Error('Falta payload.ciclo_destino');
@@ -267,8 +311,11 @@ function rolloverCycle_(payload) {
 
     const cond = String(r[idx['condicion_academica']] || '').trim().toLowerCase();
     const sit = String(r[idx['situacion_actual']] || '').trim();
+    const resCierre = (idx['resultado_cierre'] !== undefined) ? String(r[idx['resultado_cierre']] || '').trim().toLowerCase() : '';
 
     if (cond === 'aprobada') approvedMap[key] = true;
+    // Si hay resultado de cierre marcado, lo tomamos como definitivo (sin des-aprobar algo ya aprobado)
+    if (resCierre === 'aprobada' || resCierre === 'aprobo' || resCierre === 'aprobó') approvedMap[key] = true;
     if (sit === 'cursa_primera_vez' || sit === 'recursa') regularMap[key] = true;
   });
 
@@ -301,6 +348,8 @@ function rolloverCycle_(payload) {
       if (obj.hasOwnProperty('condicion_academica')) obj['condicion_academica'] = condicion;
       if (obj.hasOwnProperty('nunca_cursada')) obj['nunca_cursada'] = nunca;
       if (obj.hasOwnProperty('situacion_actual')) obj['situacion_actual'] = 'no_cursa_otro_motivo';
+      if (obj.hasOwnProperty('resultado_cierre')) obj['resultado_cierre'] = '';
+      if (obj.hasOwnProperty('ciclo_cerrado')) obj['ciclo_cerrado'] = false;
       if (obj.hasOwnProperty('motivo_no_cursa')) obj['motivo_no_cursa'] = '';
       if (obj.hasOwnProperty('fecha_actualizacion')) obj['fecha_actualizacion'] = now;
       if (obj.hasOwnProperty('usuario')) obj['usuario'] = usuario;
@@ -314,6 +363,11 @@ function rolloverCycle_(payload) {
     sh.getRange(sh.getLastRow() + 1, 1, newRows.length, headers.length).setValues(newRows);
   }
 
+  let promoInfo = null;
+  if (updateStudents) {
+    promoInfo = updateStudentsOnRollover_(usuario);
+  }
+
   return {
     ciclo_origen: origen,
     ciclo_destino: destino,
@@ -321,7 +375,10 @@ function rolloverCycle_(payload) {
     estudiantes_procesados: students.length,
     materias_catalogo: catalog.length,
     filas_creadas: created,
-    filas_omitidas_ya_existian: skipped
+    filas_omitidas_ya_existian: skipped,
+    estudiantes_promovidos: promoInfo ? promoInfo.estudiantes_actualizados : 0,
+    divisiones_actualizadas: promoInfo ? promoInfo.division_actualizada : 0,
+    estudiantes_omitidos_promo: promoInfo ? promoInfo.omitidos : 0
   };
 }
 
@@ -366,7 +423,68 @@ function getStudentList_() {
     .filter(s => s.activo !== false);
 }
 
+
+// Actualiza anio_actual (+1) y, si se puede, la división en Estudiantes.
+// Se usa opcionalmente en rollover.
+function updateStudentsOnRollover_(usuario) {
+  const sh = sheet_(SHEETS.ESTUDIANTES);
+  const { headers, rows } = getValues_(sh);
+  const idx = headerMap_(headers);
+
+  if (idx['anio_actual'] === undefined) throw new Error('En Estudiantes falta la columna anio_actual');
+  if (idx['id_estudiante'] === undefined) throw new Error('En Estudiantes falta la columna id_estudiante');
+
+  let updated = 0;
+  let skipped = 0;
+  let divUpdated = 0;
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const sid = String(row[idx['id_estudiante']] || '').trim();
+    if (!sid) continue;
+
+    const activo = (idx['activo'] !== undefined) ? toBool_(row[idx['activo']]) : true;
+    if (activo === false) continue;
+
+    const anio = Number(row[idx['anio_actual']] || '');
+    if (isNaN(anio) || anio <= 0) { skipped++; continue; }
+
+    // No promovemos más allá de 6 por defecto
+    const nuevoAnio = Math.min(anio + 1, 6);
+    if (nuevoAnio === anio) { skipped++; continue; }
+
+    row[idx['anio_actual']] = nuevoAnio;
+
+    if (idx['division'] !== undefined) {
+      const promo = promoDivision_(row[idx['division']]);
+      if (promo.ok) {
+        row[idx['division']] = promo.value;
+        divUpdated++;
+      }
+    }
+
+    if (idx['observaciones'] !== undefined && usuario) {
+      const prev = String(row[idx['observaciones']] || '');
+      const tag = `[auto-rollover ${isoNow_().slice(0,10)}]`;
+      row[idx['observaciones']] = prev ? `${prev} ${tag}` : tag;
+    }
+
+    updated++;
+  }
+
+  // Escribir de vuelta
+  if (rows.length) {
+    sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  }
+
+  return { estudiantes_actualizados: updated, division_actualizada: divUpdated, omitidos: skipped };
+}
+
+
 function getStudentStatus_(payload) {
+  // Asegurar columnas para cierre
+  ensureEstadoColumns_(['resultado_cierre','ciclo_cerrado']);
+
   const ciclo = String(payload.ciclo_lectivo || '').trim();
   const idEst = String(payload.id_estudiante || '').trim();
   if (!ciclo) throw new Error('Falta payload.ciclo_lectivo');
@@ -415,6 +533,9 @@ function getStudentStatus_(payload) {
 }
 
 function saveStudentStatus_(payload) {
+  // Asegurar columnas para cierre
+  ensureEstadoColumns_(['resultado_cierre','ciclo_cerrado']);
+
   const ciclo = String(payload.ciclo_lectivo || '').trim();
   const idEst = String(payload.id_estudiante || '').trim();
   const usuario = String(payload.usuario || 'web').trim();
@@ -462,7 +583,7 @@ function saveStudentStatus_(payload) {
         if (idx[k] === undefined) return;
         let v = fields[k];
         // Normalize booleans
-        if (k === 'nunca_cursada' || k === 'es_troncal') v = !!v;
+        if (k === 'nunca_cursada' || k === 'es_troncal' || k === 'ciclo_cerrado') v = !!v;
         newRow[idx[k]] = v;
       });
 
@@ -514,6 +635,9 @@ function saveStudentStatus_(payload) {
 }
 
 function syncCatalogRows_(payload) {
+  // Asegurar columnas para cierre
+  ensureEstadoColumns_(['resultado_cierre','ciclo_cerrado']);
+
   const ciclo = String(payload.ciclo_lectivo || '').trim();
   const idEst = String(payload.id_estudiante || '').trim();
   const usuario = String(payload.usuario || 'web').trim();
@@ -560,6 +684,113 @@ function syncCatalogRows_(payload) {
   return { added, status: getStudentStatus_({ ciclo_lectivo: ciclo, id_estudiante: idEst }) };
 }
 
+
+
+
+// Devuelve resumen por división: cantidad de estudiantes en riesgo (>= umbral adeudadas)
+// payload: { ciclo_lectivo, umbral?:number }
+function getDivisionRiskSummary_(payload) {
+  const ciclo = String(payload.ciclo_lectivo || '').trim();
+  const umbral = (payload.umbral !== undefined) ? Number(payload.umbral) : 5;
+  if (!ciclo) throw new Error('Falta payload.ciclo_lectivo');
+  if (isNaN(umbral) || umbral < 0) throw new Error('umbral inválido');
+
+  const students = getStudentList_(); // activos
+  const byId = {};
+  students.forEach(s => { byId[s.id_estudiante] = s; });
+
+  const sh = sheet_(SHEETS.ESTADO);
+  const { headers, rows } = getValues_(sh);
+  const idx = headerMap_(headers);
+
+  const adeudaCount = {}; // sid -> count
+  const hasAny = {}; // sid -> true
+
+  rows.forEach(r => {
+    const rCiclo = String(r[idx['ciclo_lectivo']] || '').trim();
+    if (rCiclo !== ciclo) return;
+    const sid = String(r[idx['id_estudiante']] || '').trim();
+    if (!sid || !byId[sid]) return;
+    hasAny[sid] = true;
+    const cond = String(r[idx['condicion_academica']] || '').trim().toLowerCase();
+    if (cond === 'adeuda') adeudaCount[sid] = (adeudaCount[sid] || 0) + 1;
+  });
+
+  // Group by division
+  const groups = {}; // key division|turno -> stats
+  students.forEach(s => {
+    const key = `${s.division || '—'}|${s.turno || ''}`;
+    if (!groups[key]) groups[key] = { division: s.division || '—', turno: s.turno || '', total_estudiantes: 0, en_riesgo: 0, sin_datos: 0 };
+    groups[key].total_estudiantes++;
+    const cnt = adeudaCount[s.id_estudiante] || 0;
+    const risk = cnt >= umbral;
+    if (risk) groups[key].en_riesgo++;
+    if (!hasAny[s.id_estudiante]) groups[key].sin_datos++;
+  });
+
+  const result = Object.values(groups).sort((a,b) => String(a.division).localeCompare(String(b.division)) || String(a.turno).localeCompare(String(b.turno)));
+  return { ciclo_lectivo: ciclo, umbral, divisiones: result };
+}
+
+// Cierre de ciclo: aplica resultado_cierre a condicion_academica (por estudiante o global)
+// payload: { ciclo_lectivo, id_estudiante?:string, usuario?:string, marcar_cerrado?:boolean }
+function closeCycle_(payload) {
+  const ciclo = String(payload.ciclo_lectivo || '').trim();
+  const idEst = payload.id_estudiante ? String(payload.id_estudiante).trim() : '';
+  const usuario = String(payload.usuario || 'cierre').trim();
+  const marcarCerrado = (payload.marcar_cerrado !== undefined) ? toBool_(payload.marcar_cerrado) : true;
+  if (!ciclo) throw new Error('Falta payload.ciclo_lectivo');
+
+  // Asegurar columnas nuevas
+  ensureEstadoColumns_(['resultado_cierre','ciclo_cerrado']);
+
+  const sh = sheet_(SHEETS.ESTADO);
+  const { headers, rows } = getValues_(sh);
+  const idx = headerMap_(headers);
+
+  const now = new Date();
+  let updated = 0;
+  let scanned = 0;
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const rCiclo = String(row[idx['ciclo_lectivo']] || '').trim();
+    if (rCiclo !== ciclo) continue;
+
+    const sid = String(row[idx['id_estudiante']] || '').trim();
+    if (!sid) continue;
+    if (idEst && sid !== idEst) continue;
+
+    scanned++;
+
+    const rc = String(row[idx['resultado_cierre']] || '').trim().toLowerCase();
+    if (!rc) continue;
+
+    // Normalizar
+    const aprobo = (rc === 'aprobada' || rc === 'aprobo' || rc === 'aprobó' || rc === 'si' || rc === 'sí');
+    const noAprobo = (rc === 'no_aprobada' || rc === 'no aprobada' || rc === 'no_aprobo' || rc === 'no aprobó' || rc === 'no');
+
+    if (aprobo) row[idx['condicion_academica']] = 'aprobada';
+    else if (noAprobo) row[idx['condicion_academica']] = 'adeuda';
+    else continue; // valor desconocido
+
+    if (marcarCerrado && idx['ciclo_cerrado'] !== undefined) row[idx['ciclo_cerrado']] = true;
+    if (idx['fecha_actualizacion'] !== undefined) row[idx['fecha_actualizacion']] = now;
+    if (idx['usuario'] !== undefined) row[idx['usuario']] = usuario;
+
+    updated++;
+  }
+
+  // Escribir de vuelta una sola vez
+  if (rows.length && updated > 0) {
+    sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  }
+
+  // devolver estado si se cerró un estudiante
+  const status = idEst ? getStudentStatus_({ ciclo_lectivo: ciclo, id_estudiante: idEst }) : null;
+
+  return { ciclo_lectivo: ciclo, id_estudiante: idEst || null, filas_revisadas: scanned, filas_actualizadas: updated, status };
+}
 // ======== Output ========
 function jsonOut_(obj, statusCode) {
   // Apps Script no permite setear status code real con ContentService,

@@ -64,7 +64,7 @@ Headers mínimos:
 - id_materia
 - nombre
 - anio
-- es_troncal
+- es_troncal  (opcional / ignorado por la app)
 
 ### EstadoPorCiclo
 - ciclo_lectivo
@@ -76,6 +76,8 @@ Headers mínimos:
 - motivo_no_cursa
 - fecha_actualizacion
 - usuario
+- resultado_cierre  (opcional, se crea solo; valores sugeridos: aprobada / no_aprobada)
+- ciclo_cerrado     (opcional, se crea solo; TRUE/FALSE)
 
 ### Auditoria (opcional)
 - timestamp
@@ -86,6 +88,8 @@ Headers mínimos:
 - antes
 - despues
 - usuario
+- resultado_cierre  (opcional, se crea solo; valores sugeridos: aprobada / no_aprobada)
+- ciclo_cerrado     (opcional, se crea solo; TRUE/FALSE)
 
 ---
 
@@ -95,8 +99,29 @@ El frontend usa POST con JSON:
 
 Acciones:
 - ping
+- getCycles
 - getCatalog
 - getStudentList
 - getStudentStatus  (payload: {ciclo_lectivo, id_estudiante})
 - saveStudentStatus (payload: {ciclo_lectivo, id_estudiante, usuario, updates:[{id_materia, fields:{...}}]})
 - syncCatalogRows  (payload: {ciclo_lectivo, id_estudiante, usuario})
+- rolloverCycle   (payload: {ciclo_origen, ciclo_destino, usuario, update_students?:boolean, update_division?:boolean})
+- getDivisionRiskSummary (payload: {ciclo_lectivo, umbral?:number})
+- closeCycle (payload: {ciclo_lectivo, id_estudiante?:string, usuario?:string, marcar_cerrado?:boolean})
+
+
+---
+
+## 5) Rollover anual (nuevo ciclo) + Promoción de estudiantes
+- En la app: botón **Crear ciclo nuevo**.
+- Crea filas en `EstadoPorCiclo` para el ciclo destino, para todos los estudiantes activos y todas las materias del catálogo.
+- No modifica ni borra ciclos anteriores.
+- La situación inicial del nuevo ciclo queda neutral (`no_cursa_otro_motivo`) para que el equipo cargue el plan anual.
+
+
+### Promoción automática (opcional)
+Durante el rollover, podés elegir actualizar la pestaña **Estudiantes**:
+- `anio_actual` suma 1 (máximo 6)
+- `division` intenta sumar 1 al número inicial (ej: 4°A → 5°A)
+
+Si alguna división no se puede interpretar, se deja igual.

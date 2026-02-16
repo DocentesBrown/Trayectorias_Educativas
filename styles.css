@@ -188,7 +188,7 @@ body{
   gap:12px; margin-top: 12px;
 }
 .table-wrap{margin-top:12px; overflow:auto; border:1px solid var(--border); border-radius: 16px}
-.table{width:100%; border-collapse:collapse; min-width:880px}
+.table{width:100%; border-collapse:collapse; min-width:980px}
 .table th, .table td{
   padding: 10px 10px;
   border-bottom: 1px solid var(--border);
@@ -225,3 +225,39 @@ body{
   .cols{grid-template-columns:1fr}
   .top-actions{gap:8px}
 }
+
+
+/* Modal */
+.modal{
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding: 18px;
+}
+.modal-backdrop{
+  position:absolute;
+  inset:0;
+  background: rgba(15,23,42,0.45);
+  backdrop-filter: blur(4px);
+}
+.modal-card{
+  position:relative;
+  width: min(920px, 100%);
+  max-height: 85vh;
+  overflow:auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+.modal-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.row.gap{gap:10px; flex-wrap:wrap}

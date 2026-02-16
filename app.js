@@ -11,6 +11,13 @@ const SITUACIONES = [
   { value: 'no_cursa_otro_motivo', label: 'No cursa (otro)' }
 ];
 
+const CIERRE_RESULTADOS = [
+  { value: '', label: '—' },
+  { value: 'aprobada', label: 'Aprobó' },
+  { value: 'no_aprobada', label: 'No aprobó' }
+];
+
+
 const $ = (id) => document.getElementById(id);
 
 let state = {
@@ -179,7 +186,8 @@ function renderStudent(data) {
 
   const s = data.estudiante || {};
   $('studentName').textContent = s.apellido ? `${s.apellido}, ${s.nombre}` : (s.nombre || s.id_estudiante || 'Estudiante');
-  $('studentMeta').textContent = `${data.ciclo_lectivo} · ${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante || ''}`;
+  const cerrado = (data.materias || []).some(x => !!x.ciclo_cerrado);
+  $('studentMeta').textContent = `${data.ciclo_lectivo} · ${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante || ''}` + (cerrado ? ' · ✅ Ciclo cerrado' : '');
 
   const materias = (data.materias || []).slice();
 
@@ -261,14 +269,30 @@ function renderEditorTable(materias) {
       setMateriaField(m.id_materia, 'situacion_actual', sel.value);
     };
 
+    const selCierre = document.createElement('select');
+    selCierre.className = 'select';
+    CIERRE_RESULTADOS.forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o.value;
+      opt.textContent = o.label;
+      if ((m.resultado_cierre || '') === o.value) opt.selected = true;
+      selCierre.appendChild(opt);
+    });
+
+    selCierre.onchange = () => {
+      setMateriaField(m.id_materia, 'resultado_cierre', selCierre.value);
+    };
+
     tr.innerHTML = `
       <td>${escapeHtml(m.nombre || m.id_materia)} <div class="muted">${escapeHtml(m.id_materia)}</div></td>
       <td>${escapeHtml(m.anio || '')}</td>
       <td>${condicion}</td>
       <td>${nunca}</td>
       <td></td>
+      <td></td>
     `;
     tr.children[4].appendChild(sel);
+    tr.children[5].appendChild(selCierre);
     tbody.appendChild(tr);
   });
 }
@@ -342,6 +366,73 @@ function autoAdjustTope() {
   setMessage('saveMsg', moved ? `Ajuste aplicado: se movieron ${moved} materias a “No cursa por tope”.` : 'No hizo falta ajustar.', moved ? 'ok' : '');
 }
 
+
+
+function setModalVisible(modalId, visible) {
+  const el = $(modalId);
+  if (!el) return;
+  el.classList.toggle('hidden', !visible);
+  el.setAttribute('aria-hidden', visible ? 'false' : 'true');
+}
+
+function renderDivisionSummary(divs) {
+  const tbody = $('summaryTbody');
+  tbody.innerHTML = '';
+  const rows = (divs || []).slice();
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">Sin datos.</td></tr>`;
+    return;
+  }
+
+  rows.forEach(d => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(d.division || '—')}</td>
+      <td>${escapeHtml(d.turno || '')}</td>
+      <td>${escapeHtml(d.total_estudiantes || 0)}</td>
+      <td><b>${escapeHtml(d.en_riesgo || 0)}</b></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function loadDivisionSummary() {
+  setMessage('summaryMsg', 'Cargando…', '');
+  try {
+    const res = await apiCall('getDivisionRiskSummary', { ciclo_lectivo: state.ciclo, umbral: 5 });
+    renderDivisionSummary(res.data.divisiones || []);
+    setMessage('summaryMsg', '', '');
+  } catch (err) {
+    setMessage('summaryMsg', 'Error: ' + err.message, 'err');
+  }
+}
+
+async function closeCycleForStudent() {
+  if (!state.selectedStudentId) return alert('Seleccioná un/a estudiante.');
+  const ok = confirm('Esto aplicará el “cierre” a la condición académica (APROBADA/ADEUDA) según la columna “Cierre: aprobó”.\n\n¿Continuar?');
+  if (!ok) return;
+
+  $('btnCloseStudent').disabled = true;
+  setMessage('saveMsg', 'Aplicando cierre…', '');
+
+  try {
+    const res = await apiCall('closeCycle', {
+      ciclo_lectivo: state.ciclo,
+      id_estudiante: state.selectedStudentId,
+      usuario: 'web',
+      marcar_cerrado: true
+    });
+
+    const status = res.data.status;
+    if (status) renderStudent(status);
+    setMessage('saveMsg', `Cierre aplicado ✅ (filas actualizadas: ${res.data.filas_actualizadas || 0})`, 'ok');
+  } catch (err) {
+    setMessage('saveMsg', 'Error al cerrar ciclo: ' + err.message, 'err');
+  } finally {
+    $('btnCloseStudent').disabled = false;
+  }
+}
 
 function renderCycles(cycles) {
   const sel = $('cicloSelect');
@@ -481,7 +572,17 @@ function wireEvents() {
     setGateVisible(true);
   };
 
-  $('btnRefresh').onclick = async () => {
+  $('btnDivisionSummary').onclick = async () => {
+  if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
+  setModalVisible('modalSummary', true);
+  await loadDivisionSummary();
+};
+
+$('btnCloseSummary').onclick = () => setModalVisible('modalSummary', false);
+$('modalSummaryBackdrop').onclick = () => setModalVisible('modalSummary', false);
+$('btnRefreshSummary').onclick = loadDivisionSummary;
+
+$('btnRefresh').onclick = async () => {
   if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
   await loadCycles();
   await loadStudents();
@@ -514,8 +615,10 @@ $('btnRollover').onclick = async () => {
   );
   if (!ok) return;
 
+  const promo = confirm('¿También querés promocionar automáticamente en la pestaña Estudiantes?\n\nOK = Sí (anio_actual +1 y ajusta división si se puede)\nCancelar = No');
+
   try {
-    const res = await apiCall('rolloverCycle', { ciclo_origen: origen, ciclo_destino: destino, usuario: 'web' });
+    const res = await apiCall('rolloverCycle', { ciclo_origen: origen, ciclo_destino: destino, usuario: 'web', update_students: promo, update_division: true });
     alert(
       `Rollover listo ✅
 
@@ -526,7 +629,9 @@ $('btnRollover').onclick = async () => {
 ` +
       `Filas creadas: ${res.data.filas_creadas}
 ` +
-      `Omitidas (ya existían): ${res.data.filas_omitidas_ya_existian}`
+      `Omitidas (ya existían): ${res.data.filas_omitidas_ya_existian}
+` +
+      (res.data.estudiantes_promovidos ? `Estudiantes promovidos: ${res.data.estudiantes_promovidos}\nDivisiones actualizadas: ${res.data.divisiones_actualizadas}` : 'Estudiantes promovidos: 0')
     );
 
     await loadCycles();
@@ -550,6 +655,7 @@ $('studentSearch').oninput = () => renderStudents(state.students);
   $('btnSync').onclick = syncCatalogRows;
 
   $('btnAutoAdjust').onclick = autoAdjustTope;
+  $('btnCloseStudent').onclick = closeCycleForStudent;
 
   $('btnCopyFamily').onclick = async () => {
     try {
