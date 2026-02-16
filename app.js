@@ -1,7 +1,6 @@
 /* Trayectorias · Frontend (GitHub Pages) */
 
 const LS_KEY = 'TRAYECTORIAS_API_KEY';
-const LS_BACKEND_URL = 'TRAYECTORIAS_BACKEND_URL';
 
 const SITUACIONES = [
   { value: '', label: '—' },
@@ -21,6 +20,20 @@ const CIERRE_RESULTADOS = [
 
 const $ = (id) => document.getElementById(id);
 
+function situacionLabel(value) {
+  const v = String(value || '').trim();
+  const o = SITUACIONES.find(x => x.value === v);
+  return o ? o.label : (v || '—');
+}
+
+function normalizeResultadoCierre(value) {
+  const t = String(value || '').trim().toLowerCase();
+  if (!t) return '';
+  if (t === 'aprobada' || t === 'aprobo' || t === 'aprobó' || t === 'si' || t === 'sí') return 'aprobada';
+  if (t === 'no_aprobada' || t === 'no aprobada' || t === 'no_aprobo' || t === 'no aprobó' || t === 'no') return 'no_aprobada';
+  return '';
+}
+
 let state = {
   apiKey: null,
   ciclo: '2026',
@@ -28,19 +41,21 @@ let state = {
   selectedStudentId: null,
   studentData: null,
   originalByMateria: new Map(), // id_materia -> snapshot
-  dirtyByMateria: new Map()     // id_materia -> fields changed
+  dirtyByMateria: new Map(),    // id_materia -> fields changed
+
+  // Modal de cierre por estudiante (resultado por materia)
+  cierre: {
+    studentId: null,
+    studentName: '',
+    materias: [],   // {id_materia,nombre,anio,situacion_actual,resultado_cierre}
+    results: {}     // id_materia -> 'aprobada' | 'no_aprobada' | ''
+  }
 };
 
 function backendUrl() {
-  const fromConfig = (window.TRAYECTORIAS_BACKEND_URL || '').trim();
-  const fromLS = (localStorage.getItem(LS_BACKEND_URL) || '').trim();
-
-  // Si en config.js quedó el placeholder, lo ignoramos.
-  const cfgOk = fromConfig && !fromConfig.includes('PEGAR_WEB_APP_URL_AQUI');
-
-  const u = (cfgOk ? fromConfig : '') || fromLS;
-  if (!u) {
-    throw new Error('Falta la URL del backend (/exec). Pegala en la pantalla de ingreso o en config.js');
+  const u = window.TRAYECTORIAS_BACKEND_URL;
+  if (!u || u.includes('PEGAR_WEB_APP_URL_AQUI')) {
+    throw new Error('Falta configurar TRAYECTORIAS_BACKEND_URL en config.js');
   }
   return u;
 }
@@ -82,18 +97,41 @@ function renderStudents(list) {
 
   filtered.forEach(s => {
     const div = document.createElement('div');
-    div.className = 'item' + (state.selectedStudentId === s.id_estudiante ? ' active' : '');
-    div.innerHTML = `
+    const isActive = state.selectedStudentId === s.id_estudiante;
+
+    div.className = 'item' +
+      (isActive ? ' active' : '') +
+      (s.ciclo_cerrado ? ' closed' : '') +
+      (s.rosado ? ' flagged' : '');
+
+    const left = document.createElement('div');
+    left.className = 'item-main';
+
+    const tags = [];
+    if (s.ciclo_cerrado) tags.push('✅ Cerrado');
+    if (s.rosado) tags.push('🩷 Revisar (tope 12)');
+
+    left.innerHTML = `
       <div class="title">${escapeHtml(`${s.apellido}, ${s.nombre}`)}</div>
-      <div class="sub">${escapeHtml(`${s.division || ''} · ${s.turno || ''} · ID: ${s.id_estudiante}`)}</div>
+      <div class="sub">${escapeHtml(`${s.division || ''} · ${s.anio_actual || ''}° · ${s.turno || ''} · ID ${s.id_estudiante}`)}${tags.length ? ` · <b>${escapeHtml(tags.join(' · '))}</b>` : ''}</div>
     `;
+
+    const btn = document.createElement('button');
+    btn.className = 'mini-btn';
+    btn.type = 'button';
+    btn.textContent = 'Cierre';
+    btn.title = 'Marcar Aprobó / No aprobó para las materias cursadas, recursadas o intensificadas';
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      openCloseModalForStudent(s.id_estudiante);
+    });
+
+    div.appendChild(left);
+    div.appendChild(btn);
+
     div.onclick = () => selectStudent(s.id_estudiante);
     el.appendChild(div);
   });
-
-  if (filtered.length === 0) {
-    el.innerHTML = `<div class="muted">No hay resultados.</div>`;
-  }
 }
 
 function escapeHtml(str) {
@@ -263,67 +301,46 @@ function renderEditorTable(materias) {
     const isAprobada = String(m.condicion_academica || '').trim().toLowerCase() === 'aprobada';
     if (isAprobada) tr.classList.add('row-approved');
 
-    const condicion = m.condicion_academica ? `<span class="badge">${escapeHtml(m.condicion_academica.toUpperCase())}</span>` : '<span class="muted">—</span>';
+    const condicion = m.condicion_academica
+      ? `<span class="badge">${escapeHtml(String(m.condicion_academica).toUpperCase())}</span>`
+      : '<span class="muted">—</span>';
+
     const nunca = m.nunca_cursada ? '<span class="badge">SÍ</span>' : '<span class="muted">NO</span>';
 
     const sel = document.createElement('select');
     sel.className = 'select';
 
     if (isAprobada) {
+      // Bloquear si ya está aprobada
+      sel.innerHTML = `<option value="no_cursa_aprobada">No cursa (aprobada)</option>`;
       sel.disabled = true;
-      const opt = document.createElement('option');
-      opt.value = 'no_cursa_aprobada';
-      opt.textContent = 'No cursa (aprobada)';
-      opt.selected = true;
-      sel.appendChild(opt);
     } else {
-      SITUACIONES.forEach(o => {
-        const opt = document.createElement('option');
-        opt.value = o.value;
-        opt.textContent = o.label;
-        if ((m.situacion_actual || '') === o.value) opt.selected = true;
-        sel.appendChild(opt);
+      SITUACIONES.forEach(opt => {
+        const o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label;
+        sel.appendChild(o);
       });
+      sel.value = m.situacion_actual || 'no_cursa_otro_motivo';
 
       sel.onchange = () => {
         setMateriaField(m.id_materia, 'situacion_actual', sel.value);
-      };
-    }
-
-    const selCierre = document.createElement('select');
-    selCierre.className = 'select';
-
-    if (isAprobada) {
-      selCierre.disabled = true;
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = '— (aprobada)';
-      opt.selected = true;
-      selCierre.appendChild(opt);
-    } else {
-      CIERRE_RESULTADOS.forEach(o => {
-        const opt = document.createElement('option');
-        opt.value = o.value;
-        opt.textContent = o.label;
-        if ((m.resultado_cierre || '') === o.value) opt.selected = true;
-        selCierre.appendChild(opt);
-      });
-
-      selCierre.onchange = () => {
-        setMateriaField(m.id_materia, 'resultado_cierre', selCierre.value);
+        if (sel.value !== 'no_cursa_por_tope') {
+          setMateriaField(m.id_materia, 'motivo_no_cursa', '');
+        }
+        validateAndRender();
       };
     }
 
     tr.innerHTML = `
-      <td>${escapeHtml(m.nombre || m.id_materia)} <div class="muted">${escapeHtml(m.id_materia)}</div></td>
-      <td>${escapeHtml(m.anio || '')}</td>
+      <td>${escapeHtml(m.nombre || '')}</td>
+      <td>${escapeHtml(String(m.anio || ''))}</td>
       <td>${condicion}</td>
       <td>${nunca}</td>
       <td></td>
-      <td></td>
     `;
+
     tr.children[4].appendChild(sel);
-    tr.children[5].appendChild(selCierre);
     tbody.appendChild(tr);
   });
 }
@@ -406,6 +423,156 @@ function setModalVisible(modalId, visible) {
   el.setAttribute('aria-hidden', visible ? 'false' : 'true');
 }
 
+
+// ======== Modal: Cierre por estudiante (sin desplegable en la tabla) ========
+async function openCloseModalForStudent(idEstudiante) {
+  const sid = String(idEstudiante || '').trim();
+  if (!sid) return alert('Seleccioná un/a estudiante.');
+
+  setModalVisible('modalClose', true);
+  setMessage('closeModalMsg', 'Cargando materias…', '');
+  $('btnApplyCloseModal').disabled = true;
+
+  try {
+    const res = await apiCall('getStudentStatus', { ciclo_lectivo: state.ciclo, id_estudiante: sid });
+    const data = res.data || {};
+    const est = data.estudiante || {};
+    const nombre = (est.apellido && est.nombre) ? `${est.apellido}, ${est.nombre}` : (`ID ${sid}`);
+
+    const allowed = new Set(['cursa_primera_vez', 'recursa', 'intensifica']);
+    const materias = (data.materias || [])
+      .filter(m => allowed.has(String(m.situacion_actual || '').trim()))
+      .filter(m => String(m.condicion_academica || '').trim().toLowerCase() !== 'aprobada')
+      .map(m => ({
+        id_materia: m.id_materia,
+        nombre: m.nombre,
+        anio: m.anio,
+        situacion_actual: m.situacion_actual,
+        resultado_cierre: m.resultado_cierre || ''
+      }))
+      .sort((a,b) => (a.anio||0)-(b.anio||0) || String(a.nombre).localeCompare(String(b.nombre)));
+
+    const results = {};
+    materias.forEach(m => { results[m.id_materia] = normalizeResultadoCierre(m.resultado_cierre); });
+
+    state.cierre = { studentId: sid, studentName: nombre, materias, results };
+    renderCloseModal();
+  } catch (err) {
+    setMessage('closeModalMsg', 'Error: ' + err.message, 'err');
+  }
+}
+
+function renderCloseModal() {
+  $('closeModalTitle').textContent = `Cierre de ciclo · ${state.cierre.studentName || ''}`;
+
+  const tbody = $('closeTbody');
+  tbody.innerHTML = '';
+
+  const materias = state.cierre.materias || [];
+
+  if (!materias.length) {
+    tbody.innerHTML = `<tr><td colspan="3" class="muted">No hay materias para cerrar (cursa / recursa / intensifica) en este ciclo.</td></tr>`;
+    $('btnApplyCloseModal').disabled = true;
+    setMessage('closeModalMsg', '', '');
+    return;
+  }
+
+  materias.forEach(m => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(m.nombre || '')}</td>
+      <td><span class="badge">${escapeHtml(situacionLabel(m.situacion_actual))}</span></td>
+      <td></td>
+    `;
+
+    const td = tr.children[2];
+    const grp = document.createElement('div');
+    grp.className = 'seg-group';
+
+    const cur = state.cierre.results[m.id_materia] || '';
+
+    const mkBtn = (label, val, extraClass) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `seg ${extraClass || ''}` + (cur === val ? ' active' : '');
+      b.textContent = label;
+      b.onclick = () => {
+        // toggle
+        state.cierre.results[m.id_materia] = (state.cierre.results[m.id_materia] === val) ? '' : val;
+        renderCloseModal();
+      };
+      return b;
+    };
+
+    grp.appendChild(mkBtn('Aprobó', 'aprobada', 'yes'));
+    grp.appendChild(mkBtn('No aprobó', 'no_aprobada', 'no'));
+    td.appendChild(grp);
+
+    tbody.appendChild(tr);
+  });
+
+  const allDone = materias.every(m => !!state.cierre.results[m.id_materia]);
+  $('btnApplyCloseModal').disabled = !allDone;
+
+  setMessage(
+    'closeModalMsg',
+    allDone
+      ? 'Listo ✅ Tocá “Aplicar cierre” para guardar y marcar al estudiante en gris.'
+      : 'Marcá Aprobó / No aprobó en TODAS las materias para poder aplicar el cierre.',
+    allDone ? 'ok' : ''
+  );
+}
+
+async function applyCloseModal() {
+  const sid = state.cierre.studentId;
+  const materias = state.cierre.materias || [];
+  if (!sid || !materias.length) return;
+
+  const missing = materias.filter(m => !state.cierre.results[m.id_materia]);
+  if (missing.length) return;
+
+  $('btnApplyCloseModal').disabled = true;
+  setMessage('closeModalMsg', 'Guardando cierre…', '');
+
+  try {
+    const updates = materias.map(m => ({
+      id_materia: m.id_materia,
+      fields: { resultado_cierre: state.cierre.results[m.id_materia] }
+    }));
+
+    await apiCall('saveStudentStatus', {
+      ciclo_lectivo: state.ciclo,
+      id_estudiante: sid,
+      usuario: 'web',
+      updates
+    });
+
+    const res = await apiCall('closeCycle', {
+      ciclo_lectivo: state.ciclo,
+      id_estudiante: sid,
+      usuario: 'web',
+      marcar_cerrado: true
+    });
+
+    // Refrescar lista (gris) y, si corresponde, el panel del estudiante seleccionado
+    const keepSelected = state.selectedStudentId;
+    await loadStudents();
+    if (keepSelected) await selectStudent(keepSelected);
+
+    setMessage('closeModalMsg', 'Cierre aplicado ✅', 'ok');
+    setTimeout(() => setModalVisible('modalClose', false), 250);
+
+    // Si era el mismo estudiante y el backend devolvió status, lo mostramos
+    if (keepSelected === sid && res && res.data && res.data.status) {
+      renderStudent(res.data.status);
+    }
+  } catch (err) {
+    setMessage('closeModalMsg', 'Error: ' + err.message, 'err');
+    $('btnApplyCloseModal').disabled = false;
+  }
+}
+
+
 function renderDivisionSummary(divs) {
   const tbody = $('summaryTbody');
   tbody.innerHTML = '';
@@ -441,28 +608,7 @@ async function loadDivisionSummary() {
 
 async function closeCycleForStudent() {
   if (!state.selectedStudentId) return alert('Seleccioná un/a estudiante.');
-  const ok = confirm('Esto aplicará el “cierre” a la condición académica (APROBADA/ADEUDA) según la columna “Cierre: aprobó”.\n\n¿Continuar?');
-  if (!ok) return;
-
-  $('btnCloseStudent').disabled = true;
-  setMessage('saveMsg', 'Aplicando cierre…', '');
-
-  try {
-    const res = await apiCall('closeCycle', {
-      ciclo_lectivo: state.ciclo,
-      id_estudiante: state.selectedStudentId,
-      usuario: 'web',
-      marcar_cerrado: true
-    });
-
-    const status = res.data.status;
-    if (status) renderStudent(status);
-    setMessage('saveMsg', `Cierre aplicado ✅ (filas actualizadas: ${res.data.filas_actualizadas || 0})`, 'ok');
-  } catch (err) {
-    setMessage('saveMsg', 'Error al cerrar ciclo: ' + err.message, 'err');
-  } finally {
-    $('btnCloseStudent').disabled = false;
-  }
+  return openCloseModalForStudent(state.selectedStudentId);
 }
 
 function renderCycles(cycles) {
@@ -497,7 +643,7 @@ async function loadCycles() {
 }
 
 async function loadStudents() {
-  const data = await apiCall('getStudentList', {});
+  const data = await apiCall('getStudentList', { ciclo_lectivo: state.ciclo });
   state.students = data.students || [];
   renderStudents(state.students);
 }
@@ -577,17 +723,7 @@ function wireTabs() {
 }
 
 function wireEvents() {
-  // Prefill URL del backend
-  const bu = (window.TRAYECTORIAS_BACKEND_URL && !String(window.TRAYECTORIAS_BACKEND_URL).includes('PEGAR_WEB_APP_URL_AQUI'))
-    ? String(window.TRAYECTORIAS_BACKEND_URL)
-    : (localStorage.getItem(LS_BACKEND_URL) || '');
-  if ($('backendUrlInput')) $('backendUrlInput').value = bu;
-
   $('btnSaveKey').onclick = async () => {
-    // Guardar (opcional) URL del backend en este navegador
-    const backend = ($('backendUrlInput') ? $('backendUrlInput').value : '').trim();
-    if (backend) localStorage.setItem(LS_BACKEND_URL, backend);
-
     const key = $('apiKeyInput').value.trim();
     if (!key) return setMessage('gateMsg', 'Pegá la API Key.', 'err');
 
@@ -601,7 +737,7 @@ function wireEvents() {
       await loadCycles();
       await loadStudents();
     } catch (err) {
-      setMessage('gateMsg', err?.message || 'No se pudo validar. Revisá URL del backend y API Key.', 'err');
+      setMessage('gateMsg', 'Clave inválida o backend mal configurado: ' + err.message, 'err');
     }
   };
 
@@ -622,6 +758,10 @@ function wireEvents() {
 $('btnCloseSummary').onclick = () => setModalVisible('modalSummary', false);
 $('modalSummaryBackdrop').onclick = () => setModalVisible('modalSummary', false);
 $('btnRefreshSummary').onclick = loadDivisionSummary;
+
+$('btnCloseCloseModal').onclick = () => setModalVisible('modalClose', false);
+$('modalCloseBackdrop').onclick = () => setModalVisible('modalClose', false);
+$('btnApplyCloseModal').onclick = applyCloseModal;
 
 $('btnRefresh').onclick = async () => {
   if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
@@ -646,39 +786,40 @@ $('btnRollover').onclick = async () => {
   if (destino === origen) return alert('El año destino no puede ser igual al origen.');
 
   const ok = confirm(
-    `Esto va a crear (si no existen) filas en EstadoPorCiclo para el ciclo ${destino}, ` +
-    `para TODOS los estudiantes activos y TODAS las materias del catálogo.
-
-` +
-    `No borra ni modifica ciclos anteriores.
-
-¿Continuar?`
+    `Esto crea/actualiza el ciclo ${destino} con promoción automática:\n\n` +
+    `• Estudiantes: anio_actual +1 (y ajusta división si se puede)\n` +
+    `• Nuevo año: “Cursa por 1ra vez”\n` +
+    `• Adeudadas: hasta 4 → “Intensifica”\n` +
+    `• Si sobran adeudadas: “Recursa” hasta completar 12 (regular) y el resto → “No cursa por tope 12”\n\n` +
+    `No borra ni modifica ciclos anteriores.\n\n¿Continuar?`
   );
   if (!ok) return;
 
-  const promo = confirm('¿También querés promocionar automáticamente en la pestaña Estudiantes?\n\nOK = Sí (anio_actual +1 y ajusta división si se puede)\nCancelar = No');
-
   try {
-    const res = await apiCall('rolloverCycle', { ciclo_origen: origen, ciclo_destino: destino, usuario: 'web', update_students: promo, update_division: true });
-    alert(
-      `Rollover listo ✅
+    const res = await apiCall('rolloverCycle', {
+      ciclo_origen: origen,
+      ciclo_destino: destino,
+      usuario: 'web',
+      update_students: true,
+      update_division: true
+    });
 
-` +
-      `Origen: ${res.data.ciclo_origen} (existe: ${res.data.origen_existe})
-` +
-      `Destino: ${res.data.ciclo_destino}
-` +
-      `Filas creadas: ${res.data.filas_creadas}
-` +
-      `Omitidas (ya existían): ${res.data.filas_omitidas_ya_existian}
-` +
-      (res.data.estudiantes_promovidos ? `Estudiantes promovidos: ${res.data.estudiantes_promovidos}\nDivisiones actualizadas: ${res.data.divisiones_actualizadas}` : 'Estudiantes promovidos: 0')
+    alert(
+      `Rollover listo ✅\n\n` +
+      `Origen: ${res.data.ciclo_origen} (existe: ${res.data.origen_existe})\n` +
+      `Destino: ${res.data.ciclo_destino}\n` +
+      `Filas creadas: ${res.data.filas_creadas}\n` +
+      `Filas actualizadas (destino): ${res.data.filas_actualizadas_destino || 0}\n` +
+      `Omitidas (destino en uso): ${res.data.filas_omitidas_destino_en_uso || 0}\n` +
+      `Estudiantes promovidos: ${res.data.estudiantes_promovidos || 0}` +
+      (res.data.estudiantes_rosado ? `\nEstudiantes en rosado (tope 12): ${res.data.estudiantes_rosado}` : '')
     );
 
     await loadCycles();
     $('cicloSelect').value = destino;
     state.ciclo = destino;
 
+    await loadStudents();
     if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
   } catch (err) {
     alert('Error: ' + err.message);
@@ -689,6 +830,7 @@ $('studentSearch').oninput = () => renderStudents(state.students);
 
   $('cicloSelect').onchange = async () => {
     state.ciclo = $('cicloSelect').value;
+    await loadStudents();
     if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
   };
 
@@ -696,7 +838,7 @@ $('studentSearch').oninput = () => renderStudents(state.students);
   $('btnSync').onclick = syncCatalogRows;
 
   $('btnAutoAdjust').onclick = autoAdjustTope;
-  $('btnCloseStudent').onclick = closeCycleForStudent;
+  $('btnCloseStudent').onclick = () => openCloseModalForStudent(state.selectedStudentId);
 
   $('btnCopyFamily').onclick = async () => {
     try {
@@ -724,10 +866,9 @@ async function init() {
       setGateVisible(false);
       await loadCycles();
       await loadStudents();
-    } catch (err) {
-      // clave vieja / URL backend incorrecta
+    } catch {
+      // clave vieja o backend mal
       setGateVisible(true);
-      setMessage('gateMsg', err?.message || 'No se pudo validar la clave. Revisá la URL del backend y la API Key.', 'err');
     }
   } else {
     setGateVisible(true);
