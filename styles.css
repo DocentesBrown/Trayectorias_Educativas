@@ -103,65 +103,7 @@ body{
   border: 1px solid var(--border);
   border-radius: 14px;
   cursor:pointer;
-  display:flex;
-  align-items:center;
-  justify-content: space-between;
-  gap: 10px;
-  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
-
-.item-main{ min-width:0; }
-
-.item.closed{
-  background: rgba(15, 23, 42, 0.06);
-}
-
-.item.flagged{
-  background: rgba(218, 104, 99, 0.14);
-  border-color: rgba(218, 104, 99, 0.45);
-}
-
-.mini-btn{
-  padding: 8px 10px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: rgba(243, 239, 220, 0.35);
-  font-weight: 700;
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.mini-btn:hover{
-  box-shadow: 0 8px 18px rgba(15,23,42,0.10);
-}
-
-.seg-group{
-  display:flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.seg{
-  padding: 8px 10px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: #fff;
-  font-weight: 800;
-  font-size: 12px;
-  cursor: pointer;
-}
-.seg.active{
-  box-shadow: 0 10px 18px rgba(15,23,42,0.10);
-}
-.seg.yes.active{
-  border-color: rgba(61, 143, 176, 0.8);
-  background: rgba(61, 143, 176, 0.12);
-}
-.seg.no.active{
-  border-color: rgba(218, 104, 99, 0.8);
-  background: rgba(218, 104, 99, 0.12);
-}
-
 .item:hover{border-color: rgba(36,73,110,0.30)}
 .item.active{
   border-color: rgba(36,73,110,0.45);
@@ -329,41 +271,4 @@ body{
   background: rgba(15, 23, 42, 0.04);
   color: var(--muted);
   cursor: not-allowed;
-}
-
-
-/* Students list markers */
-.row.between{justify-content:space-between}
-.btn.mini{
-  padding: 7px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 800;
-}
-.item.closed{
-  background: rgba(15, 23, 42, 0.04);
-  border-color: rgba(15, 23, 42, 0.18);
-  opacity: 0.75;
-}
-.item.review{
-  background: rgba(218,104,99,0.10);
-  border-color: rgba(218,104,99,0.45);
-}
-.item.review .title{color: #7a1d16}
-
-/* Close modal choice buttons */
-.choicebox{display:flex; gap:8px; flex-wrap:wrap}
-.choice{
-  padding: 8px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: #fff;
-  cursor:pointer;
-  font-weight: 900;
-  font-size: 12px;
-}
-.choice.on{
-  background: rgba(36,73,110,0.10);
-  border-color: rgba(36,73,110,0.30);
-  color: var(--blue);
 }
