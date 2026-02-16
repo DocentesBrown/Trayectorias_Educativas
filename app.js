@@ -88,26 +88,6 @@ async function apiCall(action, payload) {
 }
 
 
-function isMobile_(){
-  return window.matchMedia && window.matchMedia('(max-width: 980px)').matches;
-}
-function setMobilePanel_(which){
-  const students = $('studentsPanel');
-  const detail = $('detailPanel');
-  const nav = $('mobileNav');
-  if (!students || !detail || !nav) return;
-
-  const showStudents = which === 'students';
-  students.classList.toggle('hidden-mobile', !showStudents);
-  detail.classList.toggle('hidden-mobile', showStudents);
-
-  const bS = $('btnShowStudents');
-  const bD = $('btnShowDetail');
-  if (bS && bD){
-    bS.classList.toggle('active', showStudents);
-    bD.classList.toggle('active', !showStudents);
-  }
-}
 
 function setGateVisible(visible) {
   $('gate').classList.toggle('hidden', !visible);
@@ -741,10 +721,10 @@ async function selectStudent(id) {
   const data = await apiCall('getStudentStatus', { ciclo_lectivo: ciclo, id_estudiante: id });
   renderStudent(data.data);
 
-  // Mobile UX: after selecting, jump to detail panel
-  if (isMobile_()) {
-    setMobilePanel_('detail');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+  // Mobile UX: after selecting, bring detail into view
+  if (window.matchMedia('(max-width: 980px)').matches) {
+    const dp = document.getElementById('detailPanel');
+    if (dp) dp.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 }
 
@@ -946,18 +926,9 @@ $('cicloSelect').onchange = async () => {
     }
   };
   // Mobile panel navigation
-  if ($('btnShowStudents')) $('btnShowStudents').onclick = () => setMobilePanel_('students');
-  if ($('btnShowDetail')) $('btnShowDetail').onclick = () => setMobilePanel_('detail');
-  if ($('btnBackStudents')) $('btnBackStudents').onclick = () => setMobilePanel_('students');
-
-  // When resizing, keep a sensible panel visible
-  window.addEventListener('resize', () => {
-    if (!isMobile_()){
-      // on desktop show both
-      const students = $('studentsPanel');
       const detail = $('detailPanel');
-      if (students) students.classList.remove('hidden-mobile');
-      if (detail) detail.classList.remove('hidden-mobile');
+      if (students) students.classList.remove('');
+      if (detail) detail.classList.remove('');
     } else {
       // on mobile: if no student selected, show students; else keep detail
       setMobilePanel_(state.selectedStudentId ? 'detail' : 'students');
@@ -973,7 +944,7 @@ async function init() {
   // ciclo default
 
   // Mobile: start on students panel
-  if (isMobile_()) setMobilePanel_('students');
+  if (window.matchMedia('(max-width: 980px)').matches) 
 
   state.ciclo = $('cicloSelect').value;
 
