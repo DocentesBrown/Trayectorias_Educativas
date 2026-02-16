@@ -87,6 +87,28 @@ async function apiCall(action, payload) {
   return data;
 }
 
+
+function isMobile_(){
+  return window.matchMedia && window.matchMedia('(max-width: 980px)').matches;
+}
+function setMobilePanel_(which){
+  const students = $('studentsPanel');
+  const detail = $('detailPanel');
+  const nav = $('mobileNav');
+  if (!students || !detail || !nav) return;
+
+  const showStudents = which === 'students';
+  students.classList.toggle('hidden-mobile', !showStudents);
+  detail.classList.toggle('hidden-mobile', showStudents);
+
+  const bS = $('btnShowStudents');
+  const bD = $('btnShowDetail');
+  if (bS && bD){
+    bS.classList.toggle('active', showStudents);
+    bD.classList.toggle('active', !showStudents);
+  }
+}
+
 function setGateVisible(visible) {
   $('gate').classList.toggle('hidden', !visible);
   $('app').classList.toggle('hidden', visible);
@@ -407,11 +429,11 @@ function renderEditorTable(materias) {
     }
 
     tr.innerHTML = `
-      <td>${escapeHtml(m.nombre || m.id_materia)} <div class="muted">${escapeHtml(m.id_materia)}</div></td>
-      <td>${escapeHtml(m.anio || '')}</td>
-      <td>${condicion}</td>
-      <td>${nunca}</td>
-      <td></td>
+      <td data-label="Materia">${escapeHtml(m.nombre || m.id_materia)} <div class="muted">${escapeHtml(m.id_materia)}</div></td>
+      <td data-label="Año">${escapeHtml(m.anio || '')}</td>
+      <td data-label="Condición">${condicion}</td>
+      <td data-label="Nunca cursada">${nunca}</td>
+      <td data-label="Situación actual"></td>
     `;
     tr.children[4].appendChild(sel);
     tbody.appendChild(tr);
@@ -558,10 +580,10 @@ function renderCierreModal() {
     };
 
     tr.innerHTML = `
-      <td>${escapeHtml(m.nombre || m.id_materia)} <div class="muted">${escapeHtml(m.id_materia)}</div></td>
-      <td>${escapeHtml(m.anio || '')}</td>
-      <td>${escapeHtml(cierreLabel(m.situacion_actual))}</td>
-      <td></td>
+      <td data-label="Materia">${escapeHtml(m.nombre || m.id_materia)} <div class="muted">${escapeHtml(m.id_materia)}</div></td>
+      <td data-label="Año">${escapeHtml(m.anio || '')}</td>
+      <td data-label="Situación">${escapeHtml(cierreLabel(m.situacion_actual))}</td>
+      <td data-label="Resultado"></td>
     `;
     tr.children[3].appendChild(sel);
     tbody.appendChild(tr);
@@ -648,10 +670,10 @@ function renderDivisionSummary(divs) {
   rows.forEach(d => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${escapeHtml(d.division || '—')}</td>
-      <td>${escapeHtml(d.turno || '')}</td>
-      <td>${escapeHtml(d.total_estudiantes || 0)}</td>
-      <td><b>${escapeHtml(d.en_riesgo || 0)}</b></td>
+      <td data-label="División">${escapeHtml(d.division || '—')}</td>
+      <td data-label="Turno">${escapeHtml(d.turno || '')}</td>
+      <td data-label="Total">${escapeHtml(d.total_estudiantes || 0)}</td>
+      <td data-label="En riesgo"><b>${escapeHtml(d.en_riesgo || 0)}</b></td>
     `;
     tbody.appendChild(tr);
   });
@@ -718,6 +740,12 @@ async function selectStudent(id) {
   const ciclo = state.ciclo;
   const data = await apiCall('getStudentStatus', { ciclo_lectivo: ciclo, id_estudiante: id });
   renderStudent(data.data);
+
+  // Mobile UX: after selecting, jump to detail panel
+  if (isMobile_()) {
+    setMobilePanel_('detail');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 }
 
 async function saveChanges() {
@@ -917,6 +945,25 @@ $('cicloSelect').onchange = async () => {
       setMessage('copyMsg', 'No pude copiar automáticamente. Seleccioná y copiá manual.', 'err');
     }
   };
+  // Mobile panel navigation
+  if ($('btnShowStudents')) $('btnShowStudents').onclick = () => setMobilePanel_('students');
+  if ($('btnShowDetail')) $('btnShowDetail').onclick = () => setMobilePanel_('detail');
+  if ($('btnBackStudents')) $('btnBackStudents').onclick = () => setMobilePanel_('students');
+
+  // When resizing, keep a sensible panel visible
+  window.addEventListener('resize', () => {
+    if (!isMobile_()){
+      // on desktop show both
+      const students = $('studentsPanel');
+      const detail = $('detailPanel');
+      if (students) students.classList.remove('hidden-mobile');
+      if (detail) detail.classList.remove('hidden-mobile');
+    } else {
+      // on mobile: if no student selected, show students; else keep detail
+      setMobilePanel_(state.selectedStudentId ? 'detail' : 'students');
+    }
+  }, { passive: true });
+
 }
 
 async function init() {
@@ -924,6 +971,10 @@ async function init() {
   wireEvents();
 
   // ciclo default
+
+  // Mobile: start on students panel
+  if (isMobile_()) setMobilePanel_('students');
+
   state.ciclo = $('cicloSelect').value;
 
   const saved = localStorage.getItem(LS_KEY);

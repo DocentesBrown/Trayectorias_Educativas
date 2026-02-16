@@ -45,8 +45,13 @@
 
     <!-- App -->
     <section id="app" class="grid hidden">
+      <!-- Mobile: switch between students and detail -->
+      <div id="mobileNav" class="mobile-nav">
+        <button id="btnShowStudents" class="seg active" type="button">Estudiantes</button>
+        <button id="btnShowDetail" class="seg" type="button">Detalle</button>
+      </div>
       <!-- Left: students -->
-      <aside class="card">
+      <aside id="studentsPanel" class="card">
         <div class="aside-head">
           <h2>Estudiantes</h2>
           <input id="studentSearch" class="input" placeholder="Buscar por nombre, división o ID…" />
@@ -62,8 +67,9 @@
       </aside>
 
       <!-- Right: student details -->
-      <section class="card">
+      <section id="detailPanel" class="card">
         <div class="student-head">
+          <button id="btnBackStudents" class="btn ghost mobile-only" type="button">← Estudiantes</button>
           <div>
             <h2 id="studentName">Seleccioná un/a estudiante</h2>
             <div id="studentMeta" class="muted"></div>
