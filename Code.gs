@@ -117,7 +117,7 @@ function handleRequest_(req) {
       return { ok: true, catalog: getCatalog_() };
 
     case 'getStudentList':
-      return { ok: true, students: getStudentList_() };
+      return { ok: true, students: getStudentList_(payload) };
 
     case 'getStudentStatus':
       return { ok: true, data: getStudentStatus_(payload) };
@@ -263,18 +263,20 @@ function getCycles_() {
  * payload: {ciclo_origen, ciclo_destino, usuario, update_students?:boolean, update_division?:boolean}
  */
 function rolloverCycle_(payload) {
+  // Asegurar columnas para cierre
+  ensureEstadoColumns_(['resultado_cierre','ciclo_cerrado']);
+
   const origen = String(payload.ciclo_origen || '').trim();
   const destino = String(payload.ciclo_destino || '').trim();
   const usuario = String(payload.usuario || 'rollover').trim();
-  const updateStudents = (payload.update_students !== undefined) ? toBool_(payload.update_students) : false;
-  const updateDivision = (payload.update_division !== undefined) ? toBool_(payload.update_division) : true;
+  const updateStudents = (payload.update_students !== undefined) ? toBool_(payload.update_students) : true;
 
   if (!origen) throw new Error('Falta payload.ciclo_origen');
   if (!destino) throw new Error('Falta payload.ciclo_destino');
   if (origen === destino) throw new Error('ciclo_origen y ciclo_destino no pueden ser iguales');
 
   const cycles = getCycles_();
-  const origenExiste = cycles.indexOf(origen) !== -1;
+  const origenExiste = cycles.indexOf(origen) >= 0;
 
   const students = getStudentList_(); // activos
   const catalog = getCatalog_();
@@ -283,104 +285,242 @@ function rolloverCycle_(payload) {
   const { headers, rows } = getValues_(sh);
   const idx = headerMap_(headers);
 
+  const now = new Date();
   const destNum = Number(destino);
   const hasDestNum = !isNaN(destNum);
 
-  const approvedMap = {}; // key sid|mid -> true
-  const regularMap = {};  // key sid|mid -> true (alguna vez cursó regular)
-  const existsDest = {};  // key sid|mid -> true
+  // Maps globales (histórico < destino)
+  const approvedEver = {}; // key sid|mid
+  const regularEver = {};  // key sid|mid
+  const destRowIndex = {}; // key sid|mid -> index en rows (0-based)
 
-  rows.forEach(r => {
-    const ciclo = String(r[idx['ciclo_lectivo']] || '').trim();
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const c = String(r[idx['ciclo_lectivo']] || '').trim();
     const sid = String(r[idx['id_estudiante']] || '').trim();
     const mid = String(r[idx['id_materia']] || '').trim();
-    if (!ciclo || !sid || !mid) return;
+    if (!c || !sid || !mid) continue;
 
     const key = sid + '|' + mid;
 
-    if (ciclo === destino) {
-      existsDest[key] = true;
-      return;
+    if (c === destino) {
+      destRowIndex[key] = i;
     }
 
-    // Considerar solo ciclos anteriores al destino si los ciclos son numéricos.
+    // Historial: solo ciclos anteriores al destino (si son numéricos)
     if (hasDestNum) {
-      const cNum = Number(ciclo);
-      if (!isNaN(cNum) && cNum >= destNum) return;
+      const cNum = Number(c);
+      if (!isNaN(cNum) && cNum >= destNum) continue;
     }
 
     const cond = String(r[idx['condicion_academica']] || '').trim().toLowerCase();
+    const rc = String(r[idx['resultado_cierre']] || '').trim().toLowerCase();
     const sit = String(r[idx['situacion_actual']] || '').trim();
-    const resCierre = (idx['resultado_cierre'] !== undefined) ? String(r[idx['resultado_cierre']] || '').trim().toLowerCase() : '';
 
-    if (cond === 'aprobada') approvedMap[key] = true;
-    // Si hay resultado de cierre marcado, lo tomamos como definitivo (sin des-aprobar algo ya aprobado)
-    if (resCierre === 'aprobada' || resCierre === 'aprobo' || resCierre === 'aprobó') approvedMap[key] = true;
-    if (sit === 'cursa_primera_vez' || sit === 'recursa') regularMap[key] = true;
-  });
+    if (cond === 'aprobada' || rc === 'aprobada' || rc === 'aprobo' || rc === 'aprobó' || rc === 'si' || rc === 'sí') {
+      approvedEver[key] = true;
+    }
 
-  const now = new Date();
+    if (sit === 'cursa_primera_vez' || sit === 'recursa') {
+      regularEver[key] = true;
+    }
+  }
+
+  // Helpers
+  const byName = (a,b) => String(a.nombre || '').localeCompare(String(b.nombre || ''));
+  const byAnioDescName = (a,b) => (Number(b.anio||0) - Number(a.anio||0)) || byName(a,b);
+
   const newRows = [];
   let created = 0;
-  let skipped = 0;
+  let updated = 0;
+  let skippedExisting = 0;
+  let skippedInUse = 0;
 
-  students.forEach(s => {
-    const sid = s.id_estudiante;
+  const rosadoStudents = new Set();
+
+  // Planificar por estudiante
+  students.forEach(st => {
+    const sid = st.id_estudiante;
+    let anioActual = Number(st.anio_actual || '');
+    if (isNaN(anioActual) || anioActual <= 0) anioActual = 1;
+    const anioNuevo = Math.min(anioActual + 1, 6);
+
+    const isApproved = (mid) => !!approvedEver[sid + '|' + mid];
+    const everRegular = (mid) => !!regularEver[sid + '|' + mid];
+
+    // Materias del nuevo año (1ra vez) — priorizamos hasta 12
+    const matsNuevoAnio = catalog.filter(m => Number(m.anio||0) === anioNuevo && !isApproved(m.id_materia)).sort(byName);
+    const matsNuevoRegular = matsNuevoAnio.slice(0, 12);
+    const matsNuevoOverflow = matsNuevoAnio.slice(12);
+
+    // Adeudadas (años anteriores al nuevo año)
+    const adeudadas = catalog.filter(m => Number(m.anio||0) < anioNuevo && !isApproved(m.id_materia)).sort(byAnioDescName);
+
+    let intensifica = [];
+    let recursa = [];
+    let tope = [];
+
+    if (adeudadas.length <= 4) {
+      intensifica = adeudadas.slice();
+    } else {
+      intensifica = adeudadas.slice(0, 4);
+      const rem = adeudadas.slice(4);
+      const slots = Math.max(0, 12 - matsNuevoRegular.length); // (cursa 1ra vez + recursa) = 12
+      recursa = rem.slice(0, slots);
+      tope = rem.slice(slots);
+    }
+
+    // Si el propio nuevo año excede 12, lo que no entra va a tope también
+    tope = tope.concat(matsNuevoOverflow);
+
+    if (tope.length > 0) rosadoStudents.add(sid);
+
+    const setNuevoRegular = {};
+    matsNuevoRegular.forEach(m => setNuevoRegular[m.id_materia] = true);
+
+    const setInt = {};
+    intensifica.forEach(m => setInt[m.id_materia] = true);
+
+    const setRec = {};
+    recursa.forEach(m => setRec[m.id_materia] = true);
+
+    const setTope = {};
+    tope.forEach(m => setTope[m.id_materia] = true);
+
+    // Crear / actualizar fila por cada materia del catálogo
     catalog.forEach(m => {
       const mid = m.id_materia;
       const key = sid + '|' + mid;
 
-      if (existsDest[key]) { skipped++; return; }
+      // Armar fields objetivo
+      const mAnio = Number(m.anio||0);
+      const approved = isApproved(mid);
 
-      const approved = !!approvedMap[key];
-      const everRegular = !!regularMap[key];
+      let condicion = '';
+      let situacion = 'no_cursa_otro_motivo';
+      let motivo = '';
+      let nunca = false;
 
-      const condicion = approved ? 'aprobada' : 'adeuda';
-      const nunca = approved ? false : !everRegular;
+      if (approved) {
+        condicion = 'aprobada';
+        situacion = 'no_cursa_aprobada';
+        motivo = '';
+        nunca = false;
+      } else {
+        nunca = !everRegular(mid);
 
-      const obj = {};
-      headers.forEach(h => obj[h] = '');
+        if (mAnio === anioNuevo) {
+          condicion = ''; // todavía no es adeuda: se cursa por 1ra vez
+          if (setNuevoRegular[mid]) {
+            situacion = 'cursa_primera_vez';
+          } else if (setTope[mid]) {
+            situacion = 'no_cursa_por_tope';
+            motivo = 'tope 12';
+          } else {
+            situacion = 'no_cursa_otro_motivo';
+          }
+        } else if (mAnio < anioNuevo) {
+          condicion = 'adeuda';
+          if (setInt[mid]) {
+            situacion = 'intensifica';
+          } else if (setRec[mid]) {
+            situacion = 'recursa';
+          } else if (setTope[mid]) {
+            situacion = 'no_cursa_por_tope';
+            motivo = 'tope 12';
+          } else {
+            // fallback
+            situacion = 'no_cursa_otro_motivo';
+          }
+        } else {
+          // años futuros
+          condicion = '';
+          situacion = 'no_cursa_otro_motivo';
+        }
+      }
 
-      obj['ciclo_lectivo'] = destino;
-      obj['id_estudiante'] = sid;
-      obj['id_materia'] = mid;
+      const rowIdx = destRowIndex[key];
 
-      if (obj.hasOwnProperty('condicion_academica')) obj['condicion_academica'] = condicion;
-      if (obj.hasOwnProperty('nunca_cursada')) obj['nunca_cursada'] = nunca;
-      if (obj.hasOwnProperty('situacion_actual')) obj['situacion_actual'] = 'no_cursa_otro_motivo';
-      if (obj.hasOwnProperty('resultado_cierre')) obj['resultado_cierre'] = '';
-      if (obj.hasOwnProperty('ciclo_cerrado')) obj['ciclo_cerrado'] = false;
-      if (obj.hasOwnProperty('motivo_no_cursa')) obj['motivo_no_cursa'] = '';
-      if (obj.hasOwnProperty('fecha_actualizacion')) obj['fecha_actualizacion'] = now;
-      if (obj.hasOwnProperty('usuario')) obj['usuario'] = usuario;
+      if (rowIdx !== undefined) {
+        skippedExisting++;
 
-      newRows.push(headers.map(h => obj[h]));
-      created++;
+        const row = rows[rowIdx];
+
+        // Si ya está trabajado, no pisamos
+        const inUse =
+          (idx['ciclo_cerrado'] !== undefined && toBool_(row[idx['ciclo_cerrado']])) ||
+          (String(row[idx['resultado_cierre']] || '').trim() !== '');
+
+        if (inUse) {
+          skippedInUse++;
+          return;
+        }
+
+        // Actualizar en memoria
+        if (idx['condicion_academica'] !== undefined) row[idx['condicion_academica']] = condicion;
+        if (idx['nunca_cursada'] !== undefined) row[idx['nunca_cursada']] = nunca;
+        if (idx['situacion_actual'] !== undefined) row[idx['situacion_actual']] = situacion;
+        if (idx['motivo_no_cursa'] !== undefined) row[idx['motivo_no_cursa']] = motivo;
+
+        if (idx['resultado_cierre'] !== undefined) row[idx['resultado_cierre']] = '';
+        if (idx['ciclo_cerrado'] !== undefined) row[idx['ciclo_cerrado']] = false;
+
+        if (idx['fecha_actualizacion'] !== undefined) row[idx['fecha_actualizacion']] = now;
+        if (idx['usuario'] !== undefined) row[idx['usuario']] = usuario;
+
+        updated++;
+      } else {
+        const obj = {};
+        headers.forEach(h => obj[h] = '');
+
+        obj['ciclo_lectivo'] = destino;
+        obj['id_estudiante'] = sid;
+        obj['id_materia'] = mid;
+
+        if (obj.hasOwnProperty('condicion_academica')) obj['condicion_academica'] = condicion;
+        if (obj.hasOwnProperty('nunca_cursada')) obj['nunca_cursada'] = nunca;
+        if (obj.hasOwnProperty('situacion_actual')) obj['situacion_actual'] = situacion;
+        if (obj.hasOwnProperty('motivo_no_cursa')) obj['motivo_no_cursa'] = motivo;
+
+        if (obj.hasOwnProperty('resultado_cierre')) obj['resultado_cierre'] = '';
+        if (obj.hasOwnProperty('ciclo_cerrado')) obj['ciclo_cerrado'] = false;
+
+        if (obj.hasOwnProperty('fecha_actualizacion')) obj['fecha_actualizacion'] = now;
+        if (obj.hasOwnProperty('usuario')) obj['usuario'] = usuario;
+
+        newRows.push(headers.map(h => obj[h]));
+        created++;
+      }
     });
   });
 
-  if (newRows.length) {
-    sh.getRange(sh.getLastRow() + 1, 1, newRows.length, headers.length).setValues(newRows);
+  // Escribir actualizaciones
+  if (rows.length && updated > 0) {
+    sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
   }
 
-  let promoInfo = null;
-  if (updateStudents) {
-    promoInfo = updateStudentsOnRollover_(usuario);
+  if (newRows.length > 0) {
+    const startRow = sh.getLastRow() + 1;
+    sh.getRange(startRow, 1, newRows.length, headers.length).setValues(newRows);
   }
+
+  // Promoción en Estudiantes (si se pidió)
+  const promo = updateStudents ? updateStudentsOnRollover_(usuario) : { estudiantes_actualizados: 0, division_actualizada: 0, omitidos: 0 };
 
   return {
     ciclo_origen: origen,
-    ciclo_destino: destino,
     origen_existe: origenExiste,
-    estudiantes_procesados: students.length,
-    materias_catalogo: catalog.length,
+    ciclo_destino: destino,
     filas_creadas: created,
-    filas_omitidas_ya_existian: skipped,
-    estudiantes_promovidos: promoInfo ? promoInfo.estudiantes_actualizados : 0,
-    divisiones_actualizadas: promoInfo ? promoInfo.division_actualizada : 0,
-    estudiantes_omitidos_promo: promoInfo ? promoInfo.omitidos : 0
+    filas_actualizadas_destino: updated,
+    filas_omitidas_ya_existian: skippedExisting,
+    filas_omitidas_destino_en_uso: skippedInUse,
+    estudiantes_promovidos: promo.estudiantes_actualizados || 0,
+    divisiones_actualizadas: promo.division_actualizada || 0,
+    estudiantes_rosado: rosadoStudents.size
   };
 }
+
 
 
 function getCatalog_() {
@@ -401,13 +541,16 @@ function getCatalog_() {
     .filter(m => m.id_materia);
 }
 
-function getStudentList_() {
+function getStudentList_(payload) {
+  payload = payload || {};
+  const ciclo = payload.ciclo_lectivo ? String(payload.ciclo_lectivo).trim() : '';
+
   const sh = sheet_(SHEETS.ESTUDIANTES);
   const { headers, rows } = getValues_(sh);
   const idx = headerMap_(headers);
 
   // Esperados: id_estudiante, apellido, nombre, anio_actual, division, turno, activo
-  return rows
+  let students = rows
     .filter(r => r.some(c => String(c).trim() !== ''))
     .map(r => ({
       id_estudiante: String(r[idx['id_estudiante']] || '').trim(),
@@ -421,7 +564,44 @@ function getStudentList_() {
     }))
     .filter(s => s.id_estudiante)
     .filter(s => s.activo !== false);
+
+  // Si nos pasan un ciclo, devolvemos flags para la UI (gris y rosado)
+  if (ciclo) {
+    // Asegurar columnas para cierre
+    ensureEstadoColumns_(['resultado_cierre','ciclo_cerrado']);
+
+    const shE = sheet_(SHEETS.ESTADO);
+    const { headers: hE, rows: rE } = getValues_(shE);
+    const idxE = headerMap_(hE);
+
+    const cerradoMap = {};
+    const rosadoMap = {};
+
+    for (let i = 0; i < rE.length; i++) {
+      const row = rE[i];
+      const c = String(row[idxE['ciclo_lectivo']] || '').trim();
+      if (c !== ciclo) continue;
+
+      const sid = String(row[idxE['id_estudiante']] || '').trim();
+      if (!sid) continue;
+
+      const sit = String(row[idxE['situacion_actual']] || '').trim();
+      if (sit === 'no_cursa_por_tope') rosadoMap[sid] = true;
+
+      if (idxE['ciclo_cerrado'] !== undefined && toBool_(row[idxE['ciclo_cerrado']])) {
+        cerradoMap[sid] = true;
+      }
+    }
+
+    students = students.map(s => Object.assign({}, s, {
+      ciclo_cerrado: !!cerradoMap[s.id_estudiante],
+      rosado: !!rosadoMap[s.id_estudiante]
+    }));
+  }
+
+  return students;
 }
+
 
 
 // Actualiza anio_actual (+1) y, si se puede, la división en Estudiantes.
@@ -516,6 +696,8 @@ function getStudentStatus_(payload) {
       nunca_cursada: toBool_(x.obj['nunca_cursada']),
       situacion_actual: String(x.obj['situacion_actual'] || '').trim(),
       motivo_no_cursa: String(x.obj['motivo_no_cursa'] || '').trim(),
+      resultado_cierre: String(x.obj['resultado_cierre'] || '').trim(),
+      ciclo_cerrado: toBool_(x.obj['ciclo_cerrado']),
       fecha_actualizacion: x.obj['fecha_actualizacion'] ? new Date(x.obj['fecha_actualizacion']).toISOString() : '',
       usuario: String(x.obj['usuario'] || '').trim()
     };
@@ -763,22 +945,44 @@ function closeCycle_(payload) {
 
     scanned++;
 
+    let changed = false;
+
+    // Si estamos cerrando UN estudiante, marcamos todo el ciclo como cerrado (gris en UI)
+    if (marcarCerrado && idEst && idx['ciclo_cerrado'] !== undefined) {
+      if (!toBool_(row[idx['ciclo_cerrado']])) {
+        row[idx['ciclo_cerrado']] = true;
+        changed = true;
+      }
+    }
+
     const rc = String(row[idx['resultado_cierre']] || '').trim().toLowerCase();
-    if (!rc) continue;
+    if (rc) {
+      // Normalizar
+      const aprobo = (rc === 'aprobada' || rc === 'aprobo' || rc === 'aprobó' || rc === 'si' || rc === 'sí');
+      const noAprobo = (rc === 'no_aprobada' || rc === 'no aprobada' || rc === 'no_aprobo' || rc === 'no aprobó' || rc === 'no');
 
-    // Normalizar
-    const aprobo = (rc === 'aprobada' || rc === 'aprobo' || rc === 'aprobó' || rc === 'si' || rc === 'sí');
-    const noAprobo = (rc === 'no_aprobada' || rc === 'no aprobada' || rc === 'no_aprobo' || rc === 'no aprobó' || rc === 'no');
+      if (aprobo && row[idx['condicion_academica']] !== 'aprobada') {
+        row[idx['condicion_academica']] = 'aprobada';
+        changed = true;
+      } else if (noAprobo && row[idx['condicion_academica']] !== 'adeuda') {
+        row[idx['condicion_academica']] = 'adeuda';
+        changed = true;
+      }
 
-    if (aprobo) row[idx['condicion_academica']] = 'aprobada';
-    else if (noAprobo) row[idx['condicion_academica']] = 'adeuda';
-    else continue; // valor desconocido
+      // Si se cierra masivo (sin idEst), marcamos cerrado solo donde hay resultado
+      if (marcarCerrado && !idEst && idx['ciclo_cerrado'] !== undefined) {
+        if (!toBool_(row[idx['ciclo_cerrado']])) {
+          row[idx['ciclo_cerrado']] = true;
+          changed = true;
+        }
+      }
+    }
 
-    if (marcarCerrado && idx['ciclo_cerrado'] !== undefined) row[idx['ciclo_cerrado']] = true;
-    if (idx['fecha_actualizacion'] !== undefined) row[idx['fecha_actualizacion']] = now;
-    if (idx['usuario'] !== undefined) row[idx['usuario']] = usuario;
-
-    updated++;
+    if (changed) {
+      if (idx['fecha_actualizacion'] !== undefined) row[idx['fecha_actualizacion']] = now;
+      if (idx['usuario'] !== undefined) row[idx['usuario']] = usuario;
+      updated++;
+    }
   }
 
   // Escribir de vuelta una sola vez
@@ -791,6 +995,7 @@ function closeCycle_(payload) {
 
   return { ciclo_lectivo: ciclo, id_estudiante: idEst || null, filas_revisadas: scanned, filas_actualizadas: updated, status };
 }
+
 // ======== Output ========
 function jsonOut_(obj, statusCode) {
   // Apps Script no permite setear status code real con ContentService,

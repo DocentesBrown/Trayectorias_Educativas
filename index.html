@@ -137,7 +137,7 @@
             </p>
             <div class="row gap">
               <button id="btnAutoAdjust" class="btn ghost">Ajuste automático (prioridad nunca cursadas)</button>
-              <button id="btnCloseStudent" class="btn">Cierre de ciclo (este estudiante)</button>
+              <button id="btnCloseStudent" class="btn">Cierre por materias</button>
             </div>
           </div>
 
@@ -202,6 +202,42 @@
         <div id="summaryMsg" class="msg"></div>
       </div>
     </div>
+    <!-- Modal: Cierre por estudiante -->
+    <div id="modalClose" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" id="modalCloseBackdrop"></div>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2 id="closeModalTitle">Cierre de ciclo</h2>
+          <button id="btnCloseCloseModal" class="btn ghost">Cerrar</button>
+        </div>
+
+        <p class="muted">
+          Acá marcás <b>Aprobó / No aprobó</b> solo para las materias que están como <b>Cursa</b>, <b>Recursa</b> o <b>Intensifica</b>.
+          Al aplicar, el estudiante queda <b>en gris</b> (referencia de que ya lo trabajaste).
+        </p>
+
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Materia</th>
+                <th>Situación</th>
+                <th>Resultado</th>
+              </tr>
+            </thead>
+            <tbody id="closeTbody"></tbody>
+          </table>
+        </div>
+
+        <div class="row end">
+          <button id="btnApplyCloseModal" class="btn primary" disabled>Aplicar cierre</button>
+        </div>
+
+        <div id="closeModalMsg" class="msg"></div>
+      </div>
+    </div>
+
+
 
 
 
