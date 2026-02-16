@@ -28,7 +28,9 @@ let state = {
   selectedStudentId: null,
   studentData: null,
   originalByMateria: new Map(), // id_materia -> snapshot
-  dirtyByMateria: new Map()     // id_materia -> fields changed
+  dirtyByMateria: new Map(),     // id_materia -> fields changed
+  filters: { course: '', onlyPending: false, onlyRisk: false }
+
 };
 
 function backendUrl() {
@@ -66,10 +68,26 @@ function setGateVisible(visible) {
 
 function renderStudents(list) {
   const q = ($('studentSearch').value || '').trim().toLowerCase();
-  const filtered = list.filter(s => {
+
+  let filtered = (list || []).filter(s => {
     const t = `${s.id_estudiante} ${s.apellido} ${s.nombre} ${s.division} ${s.anio_actual} ${s.turno}`.toLowerCase();
     return t.includes(q);
   });
+
+  // Filtro por curso (año|división|turno)
+  if (state.filters && state.filters.course) {
+    filtered = filtered.filter(s => courseKey_(s) === state.filters.course);
+  }
+
+  // Filtro: faltan cargar cierre
+  if (state.filters && state.filters.onlyPending) {
+    filtered = filtered.filter(s => (Number(s.cierre_pendiente || 0) > 0));
+  }
+
+  // Filtro: en riesgo
+  if (state.filters && state.filters.onlyRisk) {
+    filtered = filtered.filter(s => !!s.en_riesgo);
+  }
 
   const el = $('studentsList');
   el.innerHTML = '';
@@ -79,12 +97,14 @@ function renderStudents(list) {
 
     const done = !!s.cierre_completo;
     const needs = !!s.needs_review;
+    const risk = !!s.en_riesgo;
 
     div.className =
       'item' +
       (state.selectedStudentId === s.id_estudiante ? ' active' : '') +
       (done ? ' done' : '') +
-      (needs ? ' needs-review' : '');
+      (needs ? ' needs-review' : '') +
+      (risk ? ' risk' : '');
 
     div.innerHTML = `
       <div class="item-head">
@@ -113,6 +133,56 @@ function renderStudents(list) {
 
   if (filtered.length === 0) {
     el.innerHTML = `<div class="muted">No hay resultados.</div>`;
+  }
+}
+
+
+function courseKey_(s){
+  return `${s.anio_actual || ''}|${s.division || ''}|${s.turno || ''}`;
+}
+function courseLabel_(s){
+  const a = (s.anio_actual !== undefined && s.anio_actual !== null && s.anio_actual !== '') ? `${s.anio_actual}º` : '';
+  const d = (s.division || '—');
+  const t = (s.turno || '');
+  return `${a} ${d}${t ? ' · ' + t : ''}`.trim();
+}
+
+function rebuildCourseOptions(list){
+  const sel = $('courseFilter');
+  if (!sel) return;
+
+  const current = state.filters.course || sel.value || '';
+  const map = new Map();
+
+  (list || []).forEach(s => {
+    const key = courseKey_(s);
+    const label = courseLabel_(s);
+    if (!map.has(key)) map.set(key, label);
+  });
+
+  const entries = Array.from(map.entries()).sort((a,b) => {
+    // sort by year number then label
+    const ya = Number(String(a[0]).split('|')[0] || 0);
+    const yb = Number(String(b[0]).split('|')[0] || 0);
+    if (ya !== yb) return ya - yb;
+    return String(a[1]).localeCompare(String(b[1]));
+  });
+
+  sel.innerHTML = `<option value="">Todos los cursos</option>`;
+  entries.forEach(([key,label]) => {
+    const opt = document.createElement('option');
+    opt.value = key;
+    opt.textContent = label;
+    sel.appendChild(opt);
+  });
+
+  // reponer selección si sigue existiendo
+  if (current && map.has(current)) {
+    sel.value = current;
+    state.filters.course = current;
+  } else {
+    sel.value = '';
+    state.filters.course = '';
   }
 }
 
@@ -508,11 +578,26 @@ async function saveChangesFromCierreModal() {
       usuario: 'web',
       updates
     };
+
+    // 1) Guardar resultado_cierre (y otros campos)
     const res = await apiCall('saveStudentStatus', payload);
-    renderStudent(res.data);
-    await loadStudents();
+
+    // 2) Aplicar automáticamente el cierre (resultado_cierre -> condicion_academica)
+    await apiCall('closeCycle', {
+      ciclo_lectivo: state.ciclo,
+      id_estudiante: state.selectedStudentId,
+      usuario: 'web',
+      marcar_cerrado: true
+    });
+
+    // 3) Refrescar panel + lista + resumen sin crear ciclo nuevo
+    const fresh = await apiCall('getStudentStatus', { ciclo_lectivo: state.ciclo, id_estudiante: state.selectedStudentId });
+    renderStudent(fresh.data);
+
+    await loadStudents();        // actualiza gris/rosado + pendientes + riesgo
+    await loadDivisionSummary(); // actualiza panel de riesgo
     renderCierreModal();
-    await loadStudents(); // refresca gris/rosado
+
     setMessage('cierreMsg', 'Guardado ✅', 'ok');
 
     // Si ya está completo, cerramos modal (opcional)
@@ -596,6 +681,7 @@ async function loadCycles() {
 async function loadStudents() {
   const data = await apiCall('getStudentList', { ciclo_lectivo: state.ciclo });
   state.students = data.students || [];
+  rebuildCourseOptions(state.students);
   renderStudents(state.students);
 }
 
@@ -778,7 +864,21 @@ $('btnRollover').onclick = async () => {
 
 $('studentSearch').oninput = () => renderStudents(state.students);
 
-  $('cicloSelect').onchange = async () => {
+  // filtros estudiantes
+  if ($('courseFilter')) $('courseFilter').onchange = () => {
+    state.filters.course = $('courseFilter').value;
+    renderStudents(state.students);
+  };
+  if ($('onlyPending')) $('onlyPending').onchange = () => {
+    state.filters.onlyPending = $('onlyPending').checked;
+    renderStudents(state.students);
+  };
+  if ($('onlyRisk')) $('onlyRisk').onchange = () => {
+    state.filters.onlyRisk = $('onlyRisk').checked;
+    renderStudents(state.students);
+  };
+
+$('cicloSelect').onchange = async () => {
     state.ciclo = $('cicloSelect').value;
     await loadStudents();
     if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
