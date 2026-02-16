@@ -22,10 +22,10 @@
         <option value="2025">2025</option>
         <option value="2024">2024</option>
       </select>
-      <button id="btnRollover" class="btn ghost iconify" type="button" title="Crear ciclo nuevo" aria-label="Crear ciclo nuevo"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span><span class="lbl">Crear ciclo nuevo</span></button>
-      <button id="btnDivisionSummary" class="btn ghost iconify" type="button" title="Resumen por división" aria-label="Resumen por división"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 15l3-4 3 3 5-7"/></svg></span><span class="lbl">Resumen por división</span></button>
-      <button id="btnRefresh" class="btn ghost iconify" type="button" title="Actualizar" aria-label="Actualizar"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></span><span class="lbl">Actualizar</span></button>
-      <button id="btnLogout" class="btn ghost iconify" type="button" title="Cambiar clave" aria-label="Cambiar clave"><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a6 6 0 1 1-11.31-2.53L3 12v3h3v3h3l3.47-3.47A6 6 0 0 1 21 8Z"/></svg></span><span class="lbl">Cambiar clave</span></button>
+      <button id="btnRollover" class="btn ghost">Crear ciclo nuevo</button>
+      <button id="btnDivisionSummary" class="btn ghost">Resumen por división</button>
+      <button id="btnRefresh" class="btn ghost">Actualizar</button>
+      <button id="btnLogout" class="btn ghost">Cambiar clave</button>
     </div>
   </header>
 
@@ -45,7 +45,12 @@
 
     <!-- App -->
     <section id="app" class="grid hidden">
-<!-- Left: students -->
+      <!-- Mobile: switch between students and detail -->
+      <div id="mobileNav" class="mobile-nav">
+        <button id="btnShowStudents" class="seg active" type="button">Estudiantes</button>
+        <button id="btnShowDetail" class="seg" type="button">Detalle</button>
+      </div>
+      <!-- Left: students -->
       <aside id="studentsPanel" class="card">
         <div class="aside-head">
           <h2>Estudiantes</h2>
@@ -64,7 +69,8 @@
       <!-- Right: student details -->
       <section id="detailPanel" class="card">
         <div class="student-head">
-<div class="student-head-left">
+          <button id="btnBackStudents" class="btn ghost mobile-only" type="button">← Estudiantes</button>
+          <div>
             <h2 id="studentName">Seleccioná un/a estudiante</h2>
             <div id="studentMeta" class="muted"></div>
           </div>
