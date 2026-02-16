@@ -55,8 +55,9 @@ Headers mínimos:
 - apellido
 - nombre
 - anio_actual
-- division
-- turno
+- (nuevo) orientacion  (guardar en col J si podés)
+- division  (legacy / opcional)
+- turno     (legacy / opcional)
 - activo
 - observaciones
 
@@ -64,6 +65,7 @@ Headers mínimos:
 - id_materia
 - nombre
 - anio
+- (nuevo) orientacion (columna E). Vacío = común.
 - es_troncal  (opcional / ignorado por la app)
 
 ### EstadoPorCiclo

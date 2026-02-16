@@ -118,7 +118,7 @@ function renderStudents(list) {
   const q = ($('studentSearch').value || '').trim().toLowerCase();
 
   let filtered = (list || []).filter(s => {
-    const t = `${s.id_estudiante} ${s.apellido} ${s.nombre} ${s.division} ${s.anio_actual} ${s.turno}`.toLowerCase();
+    const t = `${s.id_estudiante} ${s.apellido} ${s.nombre} ${s.anio_actual} ${s.orientacion || ''}`.toLowerCase();
     return t.includes(q);
   });
 
@@ -158,7 +158,7 @@ function renderStudents(list) {
       <div class="item-head">
         <div>
           <div class="title">${escapeHtml(`${s.apellido}, ${s.nombre}`)}</div>
-          <div class="sub">${escapeHtml(`${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante}`)}</div>
+          <div class="sub">${escapeHtml(`${s.anio_actual || '—'}º · ${s.orientacion ? 'Orientación: ' + s.orientacion + ' · ' : ''}ID: ${s.id_estudiante}`)}</div>
         </div>
         <div class="item-actions">
           <button class="btn tiny ghost" data-action="cierre">Cierre</button>
@@ -186,13 +186,11 @@ function renderStudents(list) {
 
 
 function courseKey_(s){
-  return `${s.anio_actual || ''}|${s.division || ''}|${s.turno || ''}`;
+  return `${s.anio_actual || ''}`;
 }
 function courseLabel_(s){
   const a = (s.anio_actual !== undefined && s.anio_actual !== null && s.anio_actual !== '') ? `${s.anio_actual}º` : '';
-  const d = (s.division || '—');
-  const t = (s.turno || '');
-  return `${a} ${d}${t ? ' · ' + t : ''}`.trim();
+  return `${a}`.trim();
 }
 
 function rebuildCourseOptions(list){
@@ -332,7 +330,7 @@ function renderStudent(data) {
   const s = data.estudiante || {};
   $('studentName').textContent = s.apellido ? `${s.apellido}, ${s.nombre}` : (s.nombre || s.id_estudiante || 'Estudiante');
   const cerrado = (data.materias || []).some(x => !!x.ciclo_cerrado);
-  $('studentMeta').textContent = `${data.ciclo_lectivo} · ${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante || ''}` + (cerrado ? ' · ✅ Ciclo cerrado' : '');
+  $('studentMeta').textContent = `${data.ciclo_lectivo} · Año: ${s.anio_actual || '—'} · ${s.orientacion ? 'Orientación: ' + s.orientacion + ' · ' : ''}ID: ${s.id_estudiante || ''}` + (cerrado ? ' · ✅ Ciclo cerrado' : '');
 
   const materias = (data.materias || []).slice();
 
@@ -670,10 +668,10 @@ function renderDivisionSummary(divs) {
   rows.forEach(d => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td data-label="División">${escapeHtml(d.division || '—')}</td>
-      <td data-label="Turno">${escapeHtml(d.turno || '')}</td>
+      <td data-label="Año"><b>${escapeHtml(d.anio || d.division || '—')}</b></td>
       <td data-label="Total">${escapeHtml(d.total_estudiantes || 0)}</td>
       <td data-label="En riesgo"><b>${escapeHtml(d.en_riesgo || 0)}</b></td>
+      <td data-label="Sin datos">${escapeHtml(d.sin_datos || 0)}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -853,6 +851,108 @@ $('btnRefresh').onclick = async () => {
   }
 };
 
+
+// ======== Orientación (nuevo) ========
+function splitOrientTokensClient_(s){
+  return String(s || '')
+    .split(/[,;|\/]+/)
+    .map(x => x.trim())
+    .filter(Boolean);
+}
+
+function uniqueOrientationsFromCatalog_(catalog){
+  const set = new Set();
+  (catalog || []).forEach(m => {
+    const y = Number(m.anio || '');
+    if (!y || y < 4) return;
+    const o = String(m.orientacion || '').trim();
+    if (!o) return;
+    splitOrientTokensClient_(o).forEach(tok => set.add(tok));
+  });
+  return Array.from(set).sort((a,b) => a.localeCompare(b));
+}
+
+function openOrientModal_(students3, options){
+  return new Promise((resolve) => {
+    const modal = $('modalOrient');
+    const tb = $('orientTbody');
+    const msg = $('orientMsg');
+    const btnSave = $('btnSaveOrient');
+    const btnClose = $('btnCloseOrient');
+    const backdrop = $('modalOrientBackdrop');
+
+    if (!modal || !tb || !btnSave || !btnClose || !backdrop) return resolve(null);
+
+    msg.textContent = '';
+    msg.className = 'msg';
+
+    tb.innerHTML = '';
+
+    const rows = [];
+
+    (students3 || []).forEach(s => {
+      const tr = document.createElement('tr');
+
+      const name = `${s.apellido || ''}, ${s.nombre || ''}`.replace(/^,\s*/, '').trim() || s.id_estudiante;
+
+      const tdName = document.createElement('td');
+      tdName.setAttribute('data-label','Estudiante');
+      tdName.innerHTML = `<b>${escapeHtml(name)}</b><div class="muted">ID: ${escapeHtml(s.id_estudiante)}</div>`;
+
+      const tdSel = document.createElement('td');
+      tdSel.setAttribute('data-label','Orientación');
+
+      if (options && options.length){
+        const sel = document.createElement('select');
+        sel.className = 'select';
+        sel.innerHTML = `<option value="">Elegí…</option>` + options.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+        tdSel.appendChild(sel);
+        rows.push({ sid: s.id_estudiante, getValue: () => sel.value.trim() });
+      } else {
+        const inp = document.createElement('input');
+        inp.className = 'input';
+        inp.placeholder = 'Escribí la orientación';
+        tdSel.appendChild(inp);
+        rows.push({ sid: s.id_estudiante, getValue: () => (inp.value || '').trim() });
+      }
+
+      tr.appendChild(tdName);
+      tr.appendChild(tdSel);
+      tb.appendChild(tr);
+    });
+
+    function close(ret){
+      modal.classList.add('hidden');
+      modal.setAttribute('aria-hidden','true');
+      btnSave.onclick = null;
+      btnClose.onclick = null;
+      backdrop.onclick = null;
+      resolve(ret);
+    }
+
+    btnClose.onclick = () => close(null);
+    backdrop.onclick = () => close(null);
+
+    btnSave.onclick = () => {
+      const map = {};
+      for (const r of rows){
+        const val = r.getValue();
+        if (!val){
+          msg.textContent = 'Falta elegir la orientación para todos/as.';
+          msg.className = 'msg err';
+          return;
+        }
+        map[r.sid] = val;
+      }
+      close(map);
+    };
+
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden','false');
+  });
+}
+
+
 $('btnRollover').onclick = async () => {
   if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
 
@@ -870,7 +970,7 @@ $('btnRollover').onclick = async () => {
 
   const ok = confirm(
     `Esto va a crear (si no existen) filas en EstadoPorCiclo para el ciclo ${destino}, ` +
-    `para TODOS los estudiantes activos y TODAS las materias del catálogo.
+    `para TODOS los estudiantes activos y las materias que correspondan (según año y orientación).
 
 ` +
     `No borra ni modifica ciclos anteriores.
@@ -879,9 +979,32 @@ $('btnRollover').onclick = async () => {
   );
   if (!ok) return;
 
-    try {
+  try {
     setBtnLoading($('btnRollover'), true, 'Creando ciclo…');
-    const res = await apiCall('rolloverCycle', { ciclo_origen: origen, ciclo_destino: destino, usuario: 'web', update_students: true, update_division: true });
+
+    // Si hay estudiantes de 3º, pedir orientación (3º→4º)
+    const students3 = (state.students || []).filter(s => Number(s.anio_actual) === 3);
+    let orientaciones = null;
+
+    if (students3.length) {
+      const catRes = await apiCall('getCatalog', {});
+      const opts = uniqueOrientationsFromCatalog_(catRes.catalog || []);
+      orientaciones = await openOrientModal_(students3, opts);
+      if (!orientaciones) {
+        toast('Cancelado.');
+        return;
+      }
+    }
+
+    const res = await apiCall('rolloverCycle', {
+      ciclo_origen: origen,
+      ciclo_destino: destino,
+      usuario: 'web',
+      update_students: true,
+      update_division: false,
+      orientaciones: orientaciones || {}
+    });
+
     alert(
       `Rollover listo ✅
 
@@ -894,13 +1017,16 @@ $('btnRollover').onclick = async () => {
 ` +
       `Omitidas (ya existían): ${res.data.filas_omitidas_ya_existian}
 ` +
-      (res.data.estudiantes_promovidos ? `Estudiantes promovidos: ${res.data.estudiantes_promovidos}\nDivisiones actualizadas: ${res.data.divisiones_actualizadas}` : 'Estudiantes promovidos: 0') +
-      `\nRevisión manual (rosado): ${res.data.estudiantes_revision_manual || 0}`
+      `Estudiantes promovidos: ${res.data.estudiantes_promovidos || 0}
+` +
+      `Revisión manual (rosado): ${res.data.estudiantes_revision_manual || 0}`
     );
 
     await loadCycles();
     $('cicloSelect').value = destino;
     state.ciclo = destino;
+
+    await loadStudents(); // refrescar para traer orientaciones guardadas
 
     if (state.selectedStudentId) await selectStudent(state.selectedStudentId);
   }
@@ -909,6 +1035,8 @@ $('btnRollover').onclick = async () => {
   } finally {
     setBtnLoading($('btnRollover'), false);
   }
+};
+
 };
 
 $('studentSearch').oninput = () => renderStudents(state.students);
