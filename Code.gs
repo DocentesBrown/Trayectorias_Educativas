@@ -15,7 +15,9 @@ const SHEETS = {
   ESTUDIANTES: 'Estudiantes',
   CATALOGO: 'MateriasCatalogo',
   ESTADO: 'EstadoPorCiclo',
-  AUDITORIA: 'Auditoria'
+  AUDITORIA: 'Auditoria',
+  RESUMEN: 'ResumenPorCiclo',
+  EGRESADOS: 'Egresados'
 };
 
 const PROP_API_KEY = 'TRAYECTORIAS_API_KEY';
@@ -220,6 +222,69 @@ function ensureEstadoColumns_(names) {
   (names || []).forEach(n => ensureEstadoColumn_(n));
 }
 
+
+// ======== Helpers (crear pestañas/columnas) ========
+function ensureSheet_(name, headers) {
+  const ss = ss_();
+  let sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+  }
+  if (headers && headers.length) {
+    const firstRow = sh.getLastRow() >= 1 ? sh.getRange(1,1,1, sh.getLastColumn()).getValues()[0] : [];
+    const existing = (firstRow || []).map(h => String(h).trim()).filter(Boolean);
+    if (existing.length === 0) {
+      sh.getRange(1,1,1,headers.length).setValues([headers]);
+    } else {
+      // Asegurar que existan todos los headers (no reordenamos)
+      headers.forEach(h => {
+        if (existing.indexOf(h) === -1) {
+          sh.getRange(1, sh.getLastColumn()+1).setValue(h);
+          existing.push(h);
+        }
+      });
+    }
+  }
+  return sh;
+}
+
+function ensureColumns_(sheetName, colNames) {
+  const sh = sheet_(sheetName);
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(h => String(h).trim());
+  const existing = new Set(headers);
+  let lastCol = sh.getLastColumn();
+  (colNames || []).forEach(c => {
+    if (!existing.has(c)) {
+      lastCol++;
+      sh.getRange(1, lastCol).setValue(c);
+      existing.add(c);
+    }
+  });
+  return headerMap_(sh.getRange(1,1,1,sh.getLastColumn()).getValues()[0].map(h => String(h).trim()));
+}
+
+function ensureStudentColumns_() {
+  // egresado: TRUE/FALSE
+  // ciclo_egreso: año en el que egresó (ej 2025)
+  // fecha_pase_egresados: cuando se movió a pestaña Egresados
+  ensureColumns_(SHEETS.ESTUDIANTES, ['egresado','ciclo_egreso','fecha_pase_egresados']);
+}
+
+function ensureResumenSheet_() {
+  return ensureSheet_(SHEETS.RESUMEN, [
+    'ciclo_lectivo','id_estudiante','apellido','nombre','anio_actual','division','turno','orientacion','observaciones',
+    'activo','es_egresado',
+    'cierre_pendiente','cierre_completo','needs_review',
+    'adeuda_count','adeuda_total_count','en_riesgo',
+    'updated_at'
+  ]);
+}
+
+function ensureEgresadosSheet_() {
+  return ensureSheet_(SHEETS.EGRESADOS, [
+    'id_estudiante','apellido','nombre','division','turno','ciclo_egreso','fecha_pase_egresados','observaciones'
+  ]);
+}
 // Helpers para promo de división (ej: 4°A -> 5°A)
 function promoDivision_(division) {
   const s = String(division || '').trim();
@@ -383,7 +448,7 @@ function rolloverCycle_(payload) {
   // --- 2) Promoción de estudiantes (anio_actual +1) ---
   let promoInfo = null;
   if (updateStudents) {
-    promoInfo = updateStudentsOnRollover_(usuario);
+    promoInfo = updateStudentsOnRollover_(usuario, origen);
   }
 
   // --- 3) Ajuste automático del plan anual en el ciclo destino (12 regular + 4 intensifica) ---
@@ -557,6 +622,16 @@ function rolloverCycle_(payload) {
     sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
   }
 
+  // --- 4) Resumen rápido + limpieza de egresados sin adeudas ---
+  try {
+    rebuildResumenPorCiclo_(destino, 5);
+    moveFinishedGraduatesToEgresados_(destino, usuario);
+  } catch (e) {
+    // No bloquear el rollover si el resumen falla
+    Logger.log('Resumen/Egresados: ' + e);
+  }
+
+
   return {
     ciclo_origen: origen,
     ciclo_destino: destino,
@@ -565,7 +640,8 @@ function rolloverCycle_(payload) {
     materias_catalogo: catalog.length,
     filas_creadas: created,
     filas_omitidas_ya_existian: skipped,
-    estudiantes_promovidos: promoInfo ? promoInfo.estudiantes_actualizados : 0,
+    estudiantes_promovidos: promoInfo ? promoInfo.estudiantes_promovidos : 0,
+    egresados_marcados: promoInfo ? promoInfo.egresados_marcados : 0,
     divisiones_actualizadas: promoInfo ? promoInfo.division_actualizada : 0,
     estudiantes_omitidos_promo: promoInfo ? promoInfo.omitidos : 0,
     estudiantes_revision_manual: revisionManualCount
@@ -635,111 +711,400 @@ function getCatalog_() {
     .filter(m => m.id_materia);
 }
 
+
+// ======== ResumenPorCiclo (para carga rápida) ========
+function buildCatalogYearMap_() {
+  const catalog = getCatalog_();
+  const map = {};
+  catalog.forEach(m => {
+    const mid = String(m.id_materia || '').trim();
+    const y = Number(m.anio || '');
+    if (mid) map[mid] = (!isNaN(y) ? y : null);
+  });
+  return map;
+}
+
+function computeSummaryFromMaterias_(student, materias, umbral, catalogYearByMid) {
+  const sid = student.id_estudiante;
+  const grade = Number(student.anio_actual || '');
+  const isEgres = !!student.es_egresado;
+
+  let need = 0, done = 0, needsReview = false;
+  let adeudaPrev = 0;
+  let adeudaTotal = 0;
+
+  (materias || []).forEach(m => {
+    const sit = String(m.situacion_actual || '').trim();
+    const cond = String(m.condicion_academica || '').trim().toLowerCase();
+    const res = String(m.resultado_cierre || '').trim().toLowerCase();
+    const mid = String(m.id_materia || '').trim();
+    const matYear = (!isNaN(Number(m.anio || ''))) ? Number(m.anio || '') : (catalogYearByMid ? catalogYearByMid[mid] : null);
+
+    // Cierre
+    if (sit === 'cursa_primera_vez' || sit === 'recursa' || sit === 'intensifica') {
+      need++;
+      if (res === 'aprobada' || res === 'no_aprobada') done++;
+    }
+
+    // Revisar (rosado)
+    if (sit === 'no_cursa_por_tope' && toBool_(m.nunca_cursada)) needsReview = true;
+
+    // Adeuda (total)
+    const isAdeuda = (cond === 'adeuda') || (res === 'no_aprobada' || res === 'no aprobada' || res === 'no_aprobo' || res === 'no');
+    if (isAdeuda && sit !== 'proximos_anos') {
+      adeudaTotal++;
+      // Para "adeuda_count" (riesgo): SOLO años anteriores.
+      // Egresados: todas cuentan.
+      if (isEgres) {
+        adeudaPrev++;
+      } else {
+        if (matYear === null || matYear === undefined) {
+          adeudaPrev++; // si no sabemos el año, mejor contar (conservador)
+        } else if (!isNaN(grade) && grade > 0 && matYear < grade) {
+          adeudaPrev++;
+        }
+      }
+    }
+  });
+
+  const cierrePend = Math.max(0, need - done);
+  const cierreCompleto = (need > 0 && done >= need);
+  const enRiesgo = adeudaPrev >= (Number(umbral || 0));
+
+  return {
+    cierre_pendiente: cierrePend,
+    cierre_completo: cierreCompleto,
+    needs_review: !!needsReview,
+    adeuda_count: adeudaPrev,
+    adeuda_total_count: adeudaTotal,
+    en_riesgo: !!enRiesgo
+  };
+}
+
+function rebuildResumenPorCiclo_(ciclo, umbral) {
+  ensureResumenSheet_();
+  ensureStudentColumns_();
+  const shRes = sheet_(SHEETS.RESUMEN);
+
+  const studentsSh = sheet_(SHEETS.ESTUDIANTES);
+  const stVals = getValues_(studentsSh);
+  const stIdx = headerMap_(stVals.headers);
+
+  const students = stVals.rows
+    .filter(r => r.some(c => String(c).trim() !== ''))
+    .map(r => ({
+      id_estudiante: String(r[stIdx['id_estudiante']] || '').trim(),
+      apellido: String(r[stIdx['apellido']] || '').trim(),
+      nombre: String(r[stIdx['nombre']] || '').trim(),
+      anio_actual: Number(r[stIdx['anio_actual']] || ''),
+      division: String(r[stIdx['division']] || '').trim(),
+      turno: String(r[stIdx['turno']] || '').trim(),
+      orientacion: (stIdx['orientacion'] !== undefined) ? String(r[stIdx['orientacion']] || '').trim() : '',
+      observaciones: (stIdx['observaciones'] !== undefined) ? String(r[stIdx['observaciones']] || '').trim() : '',
+      activo: (stIdx['activo'] !== undefined) ? toBool_(r[stIdx['activo']]) : true,
+      es_egresado: (stIdx['egresado'] !== undefined) ? toBool_(r[stIdx['egresado']]) : false,
+      ciclo_egreso: (stIdx['ciclo_egreso'] !== undefined) ? String(r[stIdx['ciclo_egreso']] || '').trim() : ''
+    }))
+    .filter(s => s.id_estudiante)
+    .filter(s => s.activo !== false);
+
+  const catalogYearByMid = buildCatalogYearMap_();
+
+  // Pre-cargar EstadoPorCiclo del ciclo (una sola lectura)
+  const stSh = sheet_(SHEETS.ESTADO);
+  const est = getValues_(stSh);
+  const eidx = headerMap_(est.headers);
+
+  const materiasByStudent = {};
+  est.rows.forEach(r => {
+    const c = String(r[eidx['ciclo_lectivo']] || '').trim();
+    if (c !== ciclo) return;
+    const sid = String(r[eidx['id_estudiante']] || '').trim();
+    if (!sid) return;
+    if (!materiasByStudent[sid]) materiasByStudent[sid] = [];
+    // Normalizamos como objeto con claves usadas por computeSummaryFromMaterias_
+    materiasByStudent[sid].push({
+      id_materia: String(r[eidx['id_materia']] || '').trim(),
+      anio: (eidx['anio'] !== undefined) ? r[eidx['anio']] : '',
+      condicion_academica: String(r[eidx['condicion_academica']] || '').trim(),
+      nunca_cursada: (eidx['nunca_cursada'] !== undefined) ? r[eidx['nunca_cursada']] : '',
+      situacion_actual: String(r[eidx['situacion_actual']] || '').trim(),
+      motivo_no_cursa: (eidx['motivo_no_cursa'] !== undefined) ? String(r[eidx['motivo_no_cursa']] || '').trim() : '',
+      resultado_cierre: (eidx['resultado_cierre'] !== undefined) ? String(r[eidx['resultado_cierre']] || '').trim() : '',
+      ciclo_cerrado: (eidx['ciclo_cerrado'] !== undefined) ? r[eidx['ciclo_cerrado']] : false
+    });
+  });
+
+  const now = new Date().toISOString();
+  const newRows = students.map(s => {
+    const summary = computeSummaryFromMaterias_(s, materiasByStudent[s.id_estudiante] || [], umbral, catalogYearByMid);
+    return [
+      ciclo, s.id_estudiante, s.apellido, s.nombre, s.anio_actual, s.division, s.turno, s.orientacion, s.observaciones,
+      true, !!s.es_egresado,
+      summary.cierre_pendiente, summary.cierre_completo, summary.needs_review,
+      summary.adeuda_count, summary.adeuda_total_count, summary.en_riesgo,
+      now
+    ];
+  });
+
+  // Reescribir manteniendo otros ciclos
+  const cur = getValues_(shRes);
+  const h = cur.headers;
+  const idx = headerMap_(h);
+  const keep = cur.rows.filter(r => String(r[idx['ciclo_lectivo']] || '').trim() !== ciclo);
+  const out = [h].concat(keep, newRows);
+
+  shRes.clearContents();
+  shRes.getRange(1,1,out.length,out[0].length).setValues(out);
+
+  return { ciclo_lectivo: ciclo, filas: newRows.length };
+}
+
+
+function ensureResumenForCycle_(ciclo, umbral) {
+  ensureResumenSheet_();
+  ensureStudentColumns_();
+
+  const sh = sheet_(SHEETS.RESUMEN);
+  const tmp = getValues_(sh);
+  const idx = headerMap_(tmp.headers);
+
+  const countResumen = tmp.rows.filter(r => String(r[idx['ciclo_lectivo']] || '').trim() === ciclo).length;
+
+  // Conteo de activos (para detectar si faltan filas en resumen)
+  const shS = sheet_(SHEETS.ESTUDIANTES);
+  const sTmp = getValues_(shS);
+  const sIdx = headerMap_(sTmp.headers);
+  const activeCount = sTmp.rows
+    .filter(r => r.some(c => String(c).trim() !== ''))
+    .filter(r => {
+      const sid = String(r[sIdx['id_estudiante']] || '').trim();
+      if (!sid) return false;
+      const activo = (sIdx['activo'] !== undefined) ? toBool_(r[sIdx['activo']]) : true;
+      return activo !== false;
+    }).length;
+
+  if (countResumen === 0 || countResumen < activeCount) {
+    rebuildResumenPorCiclo_(ciclo, umbral);
+  }
+}
+
+
+function updateResumenRowFromStatus_(status, umbral) {
+  if (!status) return;
+  ensureResumenSheet_();
+  ensureStudentColumns_();
+
+  const ciclo = String(status.ciclo_lectivo || '').trim();
+  const s = status.estudiante || {};
+  const sid = String(s.id_estudiante || '').trim();
+  if (!ciclo || !sid) return;
+
+  const shRes = sheet_(SHEETS.RESUMEN);
+  const cur = getValues_(shRes);
+  const h = cur.headers;
+  const idx = headerMap_(h);
+
+  // Buscar fila ciclo+sid
+  let rowPos = -1;
+  for (let i = 0; i < cur.rows.length; i++) {
+    const r = cur.rows[i];
+    if (String(r[idx['ciclo_lectivo']] || '').trim() === ciclo && String(r[idx['id_estudiante']] || '').trim() === sid) {
+      rowPos = i; break;
+    }
+  }
+
+  const catalogYearByMid = buildCatalogYearMap_();
+  const summary = computeSummaryFromMaterias_({
+    id_estudiante: sid,
+    anio_actual: s.anio_actual,
+    es_egresado: !!s.es_egresado
+  }, status.materias || [], umbral, catalogYearByMid);
+
+  const now = new Date().toISOString();
+
+  const row = {};
+  h.forEach(k => row[k] = '');
+  row['ciclo_lectivo'] = ciclo;
+  row['id_estudiante'] = sid;
+  row['apellido'] = s.apellido || '';
+  row['nombre'] = s.nombre || '';
+  row['anio_actual'] = s.anio_actual || '';
+  row['division'] = s.division || '';
+  row['turno'] = s.turno || '';
+  row['orientacion'] = s.orientacion || '';
+  row['observaciones'] = s.observaciones || '';
+  row['activo'] = true;
+  row['es_egresado'] = !!s.es_egresado;
+  row['cierre_pendiente'] = summary.cierre_pendiente;
+  row['cierre_completo'] = summary.cierre_completo;
+  row['needs_review'] = summary.needs_review;
+  row['adeuda_count'] = summary.adeuda_count;
+  row['adeuda_total_count'] = summary.adeuda_total_count;
+  row['en_riesgo'] = summary.en_riesgo;
+  row['updated_at'] = now;
+
+  const valuesRow = h.map(k => row[k]);
+
+  if (rowPos === -1) {
+    shRes.appendRow(valuesRow);
+  } else {
+    shRes.getRange(rowPos + 2, 1, 1, h.length).setValues([valuesRow]);
+  }
+}
+
+function moveFinishedGraduatesToEgresados_(ciclo, usuario) {
+  ensureEgresadosSheet_();
+  ensureStudentColumns_();
+  ensureResumenForCycle_(ciclo, 0);
+
+  const shRes = sheet_(SHEETS.RESUMEN);
+  const tmp = getValues_(shRes);
+  const idx = headerMap_(tmp.headers);
+
+  const finished = tmp.rows
+    .filter(r => String(r[idx['ciclo_lectivo']] || '').trim() === ciclo)
+    .filter(r => toBool_(r[idx['es_egresado']]))
+    .filter(r => Number(r[idx['adeuda_total_count']] || 0) === 0)
+    .map(r => ({
+      id_estudiante: String(r[idx['id_estudiante']] || '').trim(),
+      apellido: String(r[idx['apellido']] || '').trim(),
+      nombre: String(r[idx['nombre']] || '').trim(),
+      division: String(r[idx['division']] || '').trim(),
+      turno: String(r[idx['turno']] || '').trim(),
+      observaciones: String(r[idx['observaciones']] || '').trim()
+    }))
+    .filter(x => x.id_estudiante);
+
+  if (!finished.length) return { movidos: 0 };
+
+  const shE = sheet_(SHEETS.EGRESADOS);
+  const eVals = getValues_(shE);
+  const eIdx = headerMap_(eVals.headers);
+  const already = new Set(eVals.rows.map(r => String(r[eIdx['id_estudiante']] || '').trim()).filter(Boolean));
+
+  // Actualizar Estudiantes: activo=false, fecha_pase_egresados
+  const shS = sheet_(SHEETS.ESTUDIANTES);
+  const sVals = getValues_(shS);
+  const sIdx = headerMap_(sVals.headers);
+
+  const now = new Date();
+  let updatedStudents = 0;
+
+  finished.forEach(f => {
+    // Append to Egresados if not exists
+    if (!already.has(f.id_estudiante)) {
+      shE.appendRow([f.id_estudiante, f.apellido, f.nombre, f.division, f.turno, '', now, f.observaciones]);
+      already.add(f.id_estudiante);
+    }
+
+    // Mark inactive in Estudiantes
+    for (let i = 0; i < sVals.rows.length; i++) {
+      const r = sVals.rows[i];
+      const sid = String(r[sIdx['id_estudiante']] || '').trim();
+      if (sid !== f.id_estudiante) continue;
+      if (sIdx['activo'] !== undefined) r[sIdx['activo']] = false;
+      if (sIdx['fecha_pase_egresados'] !== undefined) r[sIdx['fecha_pase_egresados']] = now;
+      updatedStudents++;
+      break;
+    }
+  });
+
+  if (updatedStudents) {
+    shS.getRange(2, 1, sVals.rows.length, sVals.headers.length).setValues(sVals.rows);
+  }
+
+  // Marcar inactivos en ResumenPorCiclo (para que desaparezcan del listado)
+  tmp.rows.forEach(r => {
+    if (String(r[idx['ciclo_lectivo']] || '').trim() !== ciclo) return;
+    const sid = String(r[idx['id_estudiante']] || '').trim();
+    const isFinished = finished.some(f => f.id_estudiante === sid);
+    if (isFinished) r[idx['activo']] = false;
+  });
+  shRes.getRange(2,1,tmp.rows.length,tmp.headers.length).setValues(tmp.rows);
+
+  return { movidos: finished.length };
+}
+
 function getStudentList_(payload) {
   payload = payload || {};
   const ciclo = String(payload.ciclo_lectivo || '').trim();
   const umbral = (payload.umbral !== undefined) ? Number(payload.umbral) : 5;
   if (isNaN(umbral) || umbral < 0) throw new Error('umbral inválido');
 
-  const sh = sheet_(SHEETS.ESTUDIANTES);
+  ensureStudentColumns_();
+
+  // Si no hay ciclo, devolvemos lista base desde Estudiantes
+  if (!ciclo) {
+    const sh = sheet_(SHEETS.ESTUDIANTES);
+    const { headers, rows } = getValues_(sh);
+    const idx = headerMap_(headers);
+
+    const students = rows
+      .filter(r => r.some(c => String(c).trim() !== ''))
+      .map(r => ({
+        id_estudiante: String(r[idx['id_estudiante']] || '').trim(),
+        apellido: String(r[idx['apellido']] || '').trim(),
+        nombre: String(r[idx['nombre']] || '').trim(),
+        anio_actual: Number(r[idx['anio_actual']] || ''),
+        division: String(r[idx['division']] || '').trim(),
+        turno: String(r[idx['turno']] || '').trim(),
+        activo: (idx['activo'] !== undefined) ? toBool_(r[idx['activo']]) : true,
+        observaciones: (idx['observaciones'] !== undefined) ? String(r[idx['observaciones']] || '').trim() : '',
+        orientacion: (idx['orientacion'] !== undefined) ? String(r[idx['orientacion']] || '').trim() : '',
+        es_egresado: (idx['egresado'] !== undefined) ? toBool_(r[idx['egresado']]) : false,
+        ciclo_egreso: (idx['ciclo_egreso'] !== undefined) ? String(r[idx['ciclo_egreso']] || '').trim() : ''
+      }))
+      .filter(s => s.id_estudiante)
+      .filter(s => s.activo !== false);
+
+    return students;
+  }
+
+  // Con ciclo: usamos ResumenPorCiclo (rápido)
+  ensureResumenForCycle_(ciclo, umbral);
+
+  const sh = sheet_(SHEETS.RESUMEN);
   const { headers, rows } = getValues_(sh);
   const idx = headerMap_(headers);
 
-  // Activos
   const students = rows
-    .filter(r => r.some(c => String(c).trim() !== ''))
+    .filter(r => String(r[idx['ciclo_lectivo']] || '').trim() === ciclo)
     .map(r => ({
+      ciclo_lectivo: ciclo,
       id_estudiante: String(r[idx['id_estudiante']] || '').trim(),
       apellido: String(r[idx['apellido']] || '').trim(),
       nombre: String(r[idx['nombre']] || '').trim(),
       anio_actual: Number(r[idx['anio_actual']] || ''),
       division: String(r[idx['division']] || '').trim(),
       turno: String(r[idx['turno']] || '').trim(),
-      activo: (idx['activo'] !== undefined) ? toBool_(r[idx['activo']]) : true,
-      observaciones: (idx['observaciones'] !== undefined) ? String(r[idx['observaciones']] || '').trim() : '',
-      orientacion: (idx['orientacion'] !== undefined) ? String(r[idx['orientacion']] || '').trim() : ''
+      orientacion: String(r[idx['orientacion']] || '').trim(),
+      observaciones: String(r[idx['observaciones']] || '').trim(),
+      activo: toBool_(r[idx['activo']]),
+      es_egresado: toBool_(r[idx['es_egresado']]),
+      cierre_pendiente: Number(r[idx['cierre_pendiente']] || 0),
+      cierre_completo: toBool_(r[idx['cierre_completo']]),
+      needs_review: toBool_(r[idx['needs_review']]),
+      adeuda_count: Number(r[idx['adeuda_count']] || 0),
+      en_riesgo: (Number(r[idx['adeuda_count']] || 0) >= umbral)
     }))
     .filter(s => s.id_estudiante)
     .filter(s => s.activo !== false);
 
-  // Si no hay ciclo, devolvemos sin flags
-  if (!ciclo) return students;
-
-  // Preparar filtros por orientación (si el catálogo usa la columna orientacion)
-  const byStudent = {};
-  students.forEach(s => { byStudent[s.id_estudiante] = s; });
-
-  const catalogFull = getCatalog_();
-  const catalogMap = {};
-  catalogFull.forEach(m => { catalogMap[m.id_materia] = m; });
-
-// Flags por ciclo: cierre completo + revisión manual (rosado)
-  const estadoSh = sheet_(SHEETS.ESTADO);
-  const est = getValues_(estadoSh);
-  const eidx = headerMap_(est.headers);
-
-  const need = {};   // sid -> total materias a cerrar
-  const done = {};   // sid -> cerradas
-  const needsReview = {}; // sid -> true
-  const adeudaCount = {}; // sid -> cantidad adeudadas (condición o cierre)
-
-  est.rows.forEach(r => {
-    const c = String(r[eidx['ciclo_lectivo']] || '').trim();
-    if (c !== ciclo) return;
-
-    const sid = String(r[eidx['id_estudiante']] || '').trim();
-    if (!sid) return;
-
-    const mid = String(r[eidx['id_materia']] || '').trim();
-    if (!mid) return;
-
-    const st = byStudent[sid];
-    if (st) {
-      const cat = catalogMap[mid];
-      if (cat && !catalogAplicaAStudent_(cat, st.anio_actual, st.orientacion)) return;
-    }
-
-    const sit = String(r[eidx['situacion_actual']] || '').trim();
-    const cond = String(r[eidx['condicion_academica']] || '').trim().toLowerCase();
-    const res = (eidx['resultado_cierre'] !== undefined) ? String(r[eidx['resultado_cierre']] || '').trim() : '';
-
-    // Conteo de adeudadas para filtro "en riesgo" (impacta aunque aún no se haya ejecutado cierre global)
-    const resLc = String(res || '').trim().toLowerCase();
-    const isAdeuda = (cond === 'adeuda') || (resLc === 'no_aprobada' || resLc === 'no aprobada' || resLc === 'no_aprobo' || resLc === 'no' );
-    if (isAdeuda && sit !== 'proximos_anos') adeudaCount[sid] = (adeudaCount[sid] || 0) + 1;
-
-    // Materias a cerrar: las que cursó/recursó/intensificó en este ciclo
-    if (sit === 'cursa_primera_vez' || sit === 'recursa' || sit === 'intensifica') {
-      need[sid] = (need[sid] || 0) + 1;
-      if (res === 'aprobada' || res === 'no_aprobada') done[sid] = (done[sid] || 0) + 1;
-    }
-
-    // Rosado: si tuvo que dejar "no cursa por tope" alguna materia nunca cursada
-    // (señal de ajuste por exceso / prioridad adeudadas)
-    if (sit === 'no_cursa_por_tope') {
-      const nunca = (eidx['nunca_cursada'] !== undefined) ? toBool_(r[eidx['nunca_cursada']]) : false;
-      if (nunca) needsReview[sid] = true;
-    }
-  });
-
-  return students.map(s => {
-    const total = need[s.id_estudiante] || 0;
-    const cerradas = done[s.id_estudiante] || 0;
-    const cierreCompleto = (total > 0 && cerradas >= total);
-    return Object.assign({}, s, {
-      cierre_pendiente: Math.max(0, total - cerradas),
-      cierre_completo: cierreCompleto,
-      needs_review: !!needsReview[s.id_estudiante],
-      adeuda_count: adeudaCount[s.id_estudiante] || 0,
-      en_riesgo: (adeudaCount[s.id_estudiante] || 0) >= umbral
-    });
-  });
+  return students;
 }
 
 
 // Actualiza anio_actual (+1) y, si se puede, la división en Estudiantes.
 // Se usa opcionalmente en rollover.
-function updateStudentsOnRollover_(usuario) {
+
+// Actualiza anio_actual (+1) y, si corresponde, marca egresados.
+// Se usa en rollover.
+// - Si el estudiante estaba en 6º en el ciclo origen: queda como egresado (egresado=TRUE) y mantiene anio_actual=6.
+// - En el resto: anio_actual = min(anio_actual+1, 6).
+function updateStudentsOnRollover_(usuario, cicloOrigen) {
+  ensureStudentColumns_();
+
   const sh = sheet_(SHEETS.ESTUDIANTES);
   const { headers, rows } = getValues_(sh);
   const idx = headerMap_(headers);
@@ -747,7 +1112,8 @@ function updateStudentsOnRollover_(usuario) {
   if (idx['anio_actual'] === undefined) throw new Error('En Estudiantes falta la columna anio_actual');
   if (idx['id_estudiante'] === undefined) throw new Error('En Estudiantes falta la columna id_estudiante');
 
-  let updated = 0;
+  let promoted = 0;
+  let graduatesMarked = 0;
   let skipped = 0;
   let divUpdated = 0;
 
@@ -762,10 +1128,26 @@ function updateStudentsOnRollover_(usuario) {
     const anio = Number(row[idx['anio_actual']] || '');
     if (isNaN(anio) || anio <= 0) { skipped++; continue; }
 
-    // No promovemos más allá de 6 por defecto
-    const nuevoAnio = Math.min(anio + 1, 6);
-    if (nuevoAnio === anio) { skipped++; continue; }
+    // Si ya está egresado, no se promociona
+    const yaEgresado = (idx['egresado'] !== undefined) ? toBool_(row[idx['egresado']]) : false;
+    if (yaEgresado) { skipped++; continue; }
 
+    if (anio >= 6) {
+      // Pasa a egresado (mantiene anio_actual=6)
+      if (idx['egresado'] !== undefined) row[idx['egresado']] = true;
+      if (idx['ciclo_egreso'] !== undefined && cicloOrigen) row[idx['ciclo_egreso']] = String(cicloOrigen);
+      graduatesMarked++;
+
+      if (idx['observaciones'] !== undefined && usuario) {
+        const prev = String(row[idx['observaciones']] || '');
+        const tag = `[egresado ${String(cicloOrigen || isoNow_().slice(0,10))}]`;
+        row[idx['observaciones']] = prev ? `${prev} ${tag}` : tag;
+      }
+
+      continue;
+    }
+
+    const nuevoAnio = Math.min(anio + 1, 6);
     row[idx['anio_actual']] = nuevoAnio;
 
     if (idx['division'] !== undefined) {
@@ -782,17 +1164,15 @@ function updateStudentsOnRollover_(usuario) {
       row[idx['observaciones']] = prev ? `${prev} ${tag}` : tag;
     }
 
-    updated++;
+    promoted++;
   }
 
-  // Escribir de vuelta
   if (rows.length) {
     sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
   }
 
-  return { estudiantes_actualizados: updated, division_actualizada: divUpdated, omitidos: skipped };
+  return { estudiantes_promovidos: promoted, egresados_marcados: graduatesMarked, division_actualizada: divUpdated, omitidos: skipped };
 }
-
 
 function getStudentStatus_(payload) {
   // Asegurar columnas para cierre
@@ -957,7 +1337,9 @@ function saveStudentStatus_(payload) {
   });
 
   // Devolver estado actualizado
-  return getStudentStatus_({ ciclo_lectivo: ciclo, id_estudiante: idEst });
+  const status = getStudentStatus_({ ciclo_lectivo: ciclo, id_estudiante: idEst });
+  try { updateResumenRowFromStatus_(status, 5); } catch (e) { Logger.log('Resumen update: ' + e); }
+  return status;
 }
 
 
@@ -1118,62 +1500,43 @@ function syncCatalogRows_(payload) {
 
 // Devuelve resumen por división: cantidad de estudiantes en riesgo (>= umbral adeudadas)
 // payload: { ciclo_lectivo, umbral?:number }
+
 function getDivisionRiskSummary_(payload) {
   const ciclo = String(payload.ciclo_lectivo || '').trim();
   const umbral = (payload.umbral !== undefined) ? Number(payload.umbral) : 5;
   if (!ciclo) throw new Error('Falta payload.ciclo_lectivo');
   if (isNaN(umbral) || umbral < 0) throw new Error('umbral inválido');
 
-  const students = getStudentList_(); // activos
-  const byId = {};
-  students.forEach(s => { byId[s.id_estudiante] = s; });
+  ensureResumenForCycle_(ciclo, umbral);
 
-  const catalogFull = getCatalog_();
-  const catalogMap = {};
-  catalogFull.forEach(m => { catalogMap[m.id_materia] = m; });
-
-  const sh = sheet_(SHEETS.ESTADO);
+  const sh = sheet_(SHEETS.RESUMEN);
   const { headers, rows } = getValues_(sh);
   const idx = headerMap_(headers);
 
-  const adeudaCount = {}; // sid -> count
-  const hasAny = {}; // sid -> true
-
+  const groups = {}; // division|turno
   rows.forEach(r => {
-    const rCiclo = String(r[idx['ciclo_lectivo']] || '').trim();
-    if (rCiclo !== ciclo) return;
-    const sid = String(r[idx['id_estudiante']] || '').trim();
-    const st = byId[sid];
-    if (!st) return;
+    if (String(r[idx['ciclo_lectivo']] || '').trim() !== ciclo) return;
+    if (toBool_(r[idx['activo']]) === false) return;
 
-    const mid = String(r[idx['id_materia']] || '').trim();
-    if (!mid) return;
-    const cat = catalogMap[mid];
-    if (cat && !catalogAplicaAStudent_(cat, st.anio_actual, st.orientacion)) return;
+    const division = String(r[idx['division']] || '—').trim() || '—';
+    const turno = String(r[idx['turno']] || '').trim();
+    const key = `${division}|${turno}`;
 
-    if (!sid || !byId[sid]) return;
-    hasAny[sid] = true;
-    const cond = String(r[idx['condicion_academica']] || '').trim().toLowerCase();
-    if (cond === 'adeuda') adeudaCount[sid] = (adeudaCount[sid] || 0) + 1;
-  });
-
-  // Group by division
-  const groups = {}; // key division|turno -> stats
-  students.forEach(s => {
-    const key = `${s.division || '—'}|${s.turno || ''}`;
-    if (!groups[key]) groups[key] = { division: s.division || '—', turno: s.turno || '', total_estudiantes: 0, en_riesgo: 0, sin_datos: 0 };
+    if (!groups[key]) groups[key] = { division, turno, total_estudiantes: 0, en_riesgo: 0, sin_datos: 0 };
     groups[key].total_estudiantes++;
-    const cnt = adeudaCount[s.id_estudiante] || 0;
-    const risk = cnt >= umbral;
-    if (risk) groups[key].en_riesgo++;
-    if (!hasAny[s.id_estudiante]) groups[key].sin_datos++;
+
+    const cnt = Number(r[idx['adeuda_count']] || 0);
+    if (cnt >= umbral) groups[key].en_riesgo++;
   });
 
-  const result = Object.values(groups).sort((a,b) => String(a.division).localeCompare(String(b.division)) || String(a.turno).localeCompare(String(b.turno)));
+  const result = Object.values(groups)
+    .sort((a,b) => String(a.division).localeCompare(String(b.division)) || String(a.turno).localeCompare(String(b.turno)));
+
   return { ciclo_lectivo: ciclo, umbral, divisiones: result };
 }
 
-// Cierre de ciclo: aplica resultado_cierre a condicion_academica (por estudiante o global)
+// Cierre de ciclo: aplica result
+: aplica resultado_cierre a condicion_academica (por estudiante o global)
 // payload: { ciclo_lectivo, id_estudiante?:string, usuario?:string, marcar_cerrado?:boolean }
 function closeCycle_(payload) {
   const ciclo = String(payload.ciclo_lectivo || '').trim();
@@ -1229,6 +1592,16 @@ function closeCycle_(payload) {
 
   // devolver estado si se cerró un estudiante
   const status = idEst ? getStudentStatus_({ ciclo_lectivo: ciclo, id_estudiante: idEst }) : null;
+
+  try {
+    if (status) updateResumenRowFromStatus_(status, 5);
+    else {
+      rebuildResumenPorCiclo_(ciclo, 5);
+      moveFinishedGraduatesToEgresados_(ciclo, usuario);
+    }
+  } catch (e) {
+    Logger.log('Resumen/Egresados closeCycle: ' + e);
+  }
 
   return { ciclo_lectivo: ciclo, id_estudiante: idEst || null, filas_revisadas: scanned, filas_actualizadas: updated, status };
 }

@@ -235,6 +235,7 @@ function renderStudents(list) {
           <div class="chips">
             ${done ? `<span class="chip ok">Cierre ✅</span>` : ``}
             ${Number(s.cierre_pendiente||0) > 0 ? `<span class="chip warn">Faltan ${Number(s.cierre_pendiente||0)}</span>` : (!done ? `<span class="chip info">Al día</span>` : ``)}
+            ${s.es_egresado ? `<span class="chip info">Egresado</span>` : ``}
             ${risk ? `<span class="chip warn">Riesgo</span>` : ``}
             ${needs ? `<span class="chip warn">Revisar</span>` : ``}
           </div>
@@ -347,7 +348,8 @@ function setMessage(elId, text, kind) {
   el.className = 'msg' + (kind ? ' ' + kind : '');
 }
 
-function computeBuckets(materias) {
+
+function computeBuckets(materias, studentYear, isEgresado) {
   const buckets = {
     aprobadas: [],
     adeudadas: [],
@@ -357,12 +359,20 @@ function computeBuckets(materias) {
     atraso: []
   };
 
+  const y = Number(studentYear || '');
+  const isEgr = !!isEgresado;
+
   materias.forEach(m => {
     const cond = (m.condicion_academica || '').trim().toLowerCase();
     const sit = (m.situacion_actual || '').trim();
+    const res = String(m.resultado_cierre || '').trim().toLowerCase();
+    const matYear = Number(m.anio || '');
 
     if (cond === 'aprobada') buckets.aprobadas.push(m);
-    if (cond === 'adeuda') buckets.adeudadas.push(m);
+
+    const isAdeuda = (cond === 'adeuda') || (res === 'no_aprobada' || res === 'no aprobada' || res === 'no_aprobo' || res === 'no');
+    const cuentaAdeuda = isAdeuda && sit !== 'proximos_anos' && (isEgr || isNaN(matYear) || isNaN(y) || matYear < y);
+    if (cuentaAdeuda) buckets.adeudadas.push(m);
 
     if (sit === 'cursa_primera_vez') buckets.primera.push(m);
     if (sit === 'recursa') buckets.recursa.push(m);
@@ -502,7 +512,7 @@ function renderStudent(data) {
   const s = data.estudiante || {};
   $('studentName').textContent = s.apellido ? `${s.apellido}, ${s.nombre}` : (s.nombre || s.id_estudiante || 'Estudiante');
   const cerrado = (data.materias || []).some(x => !!x.ciclo_cerrado);
-  $('studentMeta').textContent = `${data.ciclo_lectivo} · ${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante || ''}` + (cerrado ? ' · ✅ Ciclo cerrado' : '');
+  $('studentMeta').textContent = `${data.ciclo_lectivo} · ${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante || ''}` + (s.es_egresado ? ' · 🎓 EGRESADO' : '') + (cerrado ? ' · ✅ Ciclo cerrado' : '');
 
   renderOrientacion_(s);
 
@@ -514,7 +524,7 @@ function renderStudent(data) {
   });
 
   // stats & buckets
-  const b = computeBuckets(materias);
+  const b = computeBuckets(materias, s.anio_actual, s.es_egresado);
   const c = counts(materias);
 
   $('regularCount').textContent = String(c.regular);
@@ -552,7 +562,7 @@ function renderFamilyText(materias, data) {
   const s = data.estudiante || {};
   const { regular, intens } = counts(materias);
 
-  const b = computeBuckets(materias);
+  const b = computeBuckets(materias, s.anio_actual, s.es_egresado);
 
   const lines = [];
   lines.push(`Hola, compartimos el plan anual de trayectoria de ${s.apellido ? `${s.apellido}, ${s.nombre}` : (s.nombre || 'el/la estudiante')} (${data.ciclo_lectivo}).`);
