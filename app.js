@@ -160,7 +160,7 @@ function renderStudents(list) {
       <div class="item-head">
         <div>
           <div class="title">${escapeHtml(`${s.apellido}, ${s.nombre}`)}</div>
-          <div class="sub">${escapeHtml(`${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante}`)}</div>
+          <div class="sub">${escapeHtml(`${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante}`)}${s.egresado ? ' <span class=\"badge egresado\">🎓 Egresado</span>' : ''}</div>
         </div>
         <div class="item-actions">
           <button class="btn tiny ghost" data-action="cierre">Cierre</button>
@@ -401,7 +401,7 @@ function renderStudent(data) {
   const s = data.estudiante || {};
   $('studentName').textContent = s.apellido ? `${s.apellido}, ${s.nombre}` : (s.nombre || s.id_estudiante || 'Estudiante');
   const cerrado = (data.materias || []).some(x => !!x.ciclo_cerrado);
-  $('studentMeta').textContent = `${data.ciclo_lectivo} · ${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante || ''}` + (cerrado ? ' · ✅ Ciclo cerrado' : '');
+  $('studentMeta').textContent = `${data.ciclo_lectivo} · ${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante || ''}` + (s.egresado ? ' · 🎓 Egresado' : '') + (cerrado ? ' · ✅ Ciclo cerrado' : '');
 
   renderOrientacion_(s);
 

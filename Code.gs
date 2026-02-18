@@ -747,6 +747,14 @@ function updateStudentsOnRollover_(usuario) {
   if (idx['anio_actual'] === undefined) throw new Error('En Estudiantes falta la columna anio_actual');
   if (idx['id_estudiante'] === undefined) throw new Error('En Estudiantes falta la columna id_estudiante');
 
+  // Asegurar columna egresado (para marcar 6º como egresado en rollover)
+  if (idx['egresado'] === undefined) {
+    sh.getRange(1, headers.length + 1).setValue('egresado');
+    headers.push('egresado');
+    idx['egresado'] = headers.length - 1;
+  }
+
+
   let updated = 0;
   let skipped = 0;
   let divUpdated = 0;
@@ -762,11 +770,24 @@ function updateStudentsOnRollover_(usuario) {
     const anio = Number(row[idx['anio_actual']] || '');
     if (isNaN(anio) || anio <= 0) { skipped++; continue; }
 
-    // No promovemos más allá de 6 por defecto
-    const nuevoAnio = Math.min(anio + 1, 6);
-    if (nuevoAnio === anio) { skipped++; continue; }
+    // Si ya está en 6º: marcar como egresado (pero sigue visible para seguimiento)
+    if (anio >= 6) {
+      if (idx['egresado'] !== undefined) row[idx['egresado']] = true;
 
+      if (idx['observaciones'] !== undefined && usuario) {
+        const prev = String(row[idx['observaciones']] || '');
+        const tag = `[egresado auto ${isoNow_().slice(0,10)}]`;
+        row[idx['observaciones']] = prev ? `${prev} ${tag}` : tag;
+      }
+
+      updated++;
+      continue;
+    }
+
+    // Promoción normal (+1) sin pasar de 6º
+    const nuevoAnio = Math.min(anio + 1, 6);
     row[idx['anio_actual']] = nuevoAnio;
+    if (idx['egresado'] !== undefined) row[idx['egresado']] = false;
 
     if (idx['division'] !== undefined) {
       const promo = promoDivision_(row[idx['division']]);
