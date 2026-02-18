@@ -57,9 +57,24 @@ let state = {
   orientaciones: [],
   originalByMateria: new Map(), // id_materia -> snapshot
   dirtyByMateria: new Map(),     // id_materia -> fields changed
-  filters: { course: '', onlyPending: false, onlyRisk: false }
+  filters: { course: '', onlyPending: false, onlyRisk: false },
+  pickerJustOpenedAt: 0
 
 };
+
+
+const BOOT_LOADER_MIN_MS = 650;
+let bootLoaderStartedAt = Date.now();
+function startBootLoader_(text){
+  bootLoaderStartedAt = Date.now();
+  showAppLoader_(text || 'Cargando…');
+}
+function hideBootLoader_(){
+  const elapsed = Date.now() - bootLoaderStartedAt;
+  const wait = Math.max(0, BOOT_LOADER_MIN_MS - elapsed);
+  setTimeout(() => hideAppLoader_(), wait);
+}
+
 
 function backendUrl() {
   const u = window.TRAYECTORIAS_BACKEND_URL;
@@ -93,27 +108,83 @@ async function apiCall(action, payload) {
 function isMobile_(){
   return window.matchMedia && window.matchMedia('(max-width: 980px)').matches;
 }
-function setMobilePanel_(which){
+
+function showAppLoader_(text){
+  const l = $('appLoader');
+  if (!l) return;
+  const t = $('appLoaderText');
+  if (t) t.textContent = text || 'Cargando…';
+  l.classList.remove('hidden');
+  document.body.classList.add('app-busy');
+}
+function hideAppLoader_(){
+  const l = $('appLoader');
+  if (l) l.classList.add('hidden');
+  document.body.classList.remove('app-busy');
+}
+function pulseTopLoader_(){
+  const b = $('topLoader');
+  if (!b) return;
+  b.classList.remove('hidden');
+  b.classList.add('run');
+  setTimeout(() => {
+    b.classList.remove('run');
+    b.classList.add('hidden');
+  }, 550);
+}
+
+async function ensurePaint_(){
+  // Force the browser to paint (helps loaders appear before heavy renders / fetch)
+  await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+}
+
+
+// Prevent "open then instantly close" on mobile when the same tap triggers the backdrop.
+let pickerOpenedAt_ = 0;
+let isPickingStudent_ = false;
+
+function openStudentPicker_(){
+  pickerOpenedAt_ = Date.now();
+  isPickingStudent_ = true;
+  document.body.classList.add('picker-open');
+  const bd = $('studentsBackdrop');
+  if (bd) bd.classList.remove('hidden');
   const students = $('studentsPanel');
-  const detail = $('detailPanel');
-  const nav = $('mobileNav');
-  if (!students || !detail || !nav) return;
+  if (students) students.classList.remove('hidden-mobile');
+  setTimeout(() => {
+    const inp = $('studentSearch');
+    if (inp) {
+      inp.value = '';
+      inp.focus();
+    }
+    if (state.students) renderStudents(state.students);
+  }, 60);
+}
+function closeStudentPicker_(){
+  isPickingStudent_ = false;
+  document.body.classList.remove('picker-open');
+  const bd = $('studentsBackdrop');
+  if (bd) bd.classList.add('hidden');
+}
 
-  const showStudents = which === 'students';
-  students.classList.toggle('hidden-mobile', !showStudents);
-  detail.classList.toggle('hidden-mobile', showStudents);
+function setMobilePanel_(which){
+  // Desktop keeps the classic layout (students on the left + detail on the right)
+  if (!isMobile_()) return;
 
-  const bS = $('btnShowStudents');
-  const bD = $('btnShowDetail');
-  if (bS && bD){
-    bS.classList.toggle('active', showStudents);
-    bD.classList.toggle('active', !showStudents);
-  }
+  if (which === 'students') openStudentPicker_();
+  else closeStudentPicker_();
 }
 
 function setGateVisible(visible) {
   $('gate').classList.toggle('hidden', !visible);
   $('app').classList.toggle('hidden', visible);
+
+  // Mobile: show/hide bottom bar only when inside the app
+  const bb = $('mobileBottomBar');
+  if (bb) {
+    const show = (!visible) && isMobile_();
+    bb.classList.toggle('hidden', !show);
+  }
 }
 
 function renderStudents(list) {
@@ -160,7 +231,13 @@ function renderStudents(list) {
       <div class="item-head">
         <div>
           <div class="title">${escapeHtml(`${s.apellido}, ${s.nombre}`)}</div>
-          <div class="sub">${escapeHtml(`${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante}`)}${s.egresado ? ' <span class=\"badge egresado\">🎓 Egresado</span>' : ''}</div>
+          <div class="sub">${escapeHtml(`${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante}`)}</div>
+          <div class="chips">
+            ${done ? `<span class="chip ok">Cierre ✅</span>` : ``}
+            ${Number(s.cierre_pendiente||0) > 0 ? `<span class="chip warn">Faltan ${Number(s.cierre_pendiente||0)}</span>` : (!done ? `<span class="chip info">Al día</span>` : ``)}
+            ${risk ? `<span class="chip warn">Riesgo</span>` : ``}
+            ${needs ? `<span class="chip warn">Revisar</span>` : ``}
+          </div>
         </div>
         <div class="item-actions">
           <button class="btn tiny ghost" data-action="cierre">Cierre</button>
@@ -169,7 +246,11 @@ function renderStudents(list) {
     `;
 
     // Click en tarjeta = seleccionar estudiante
-    div.onclick = () => selectStudent(s.id_estudiante);
+    // En mobile, ignoramos el "mismo tap" que abrió el picker (si no, se vuelve a seleccionar el activo y se cierra solo).
+    div.onclick = (ev) => {
+      if (isMobile_() && (Date.now() - pickerOpenedAt_ < 350)) return;
+      selectStudent(s.id_estudiante);
+    };
 
     // Botón cierre = abrir modal (sin disparar select doble)
     const btn = div.querySelector('button[data-action="cierre"]');
@@ -198,10 +279,11 @@ function courseLabel_(s){
 }
 
 function rebuildCourseOptions(list){
-  const sel = $('courseFilter');
-  if (!sel) return;
+  const sels = [$('courseFilter'), $('courseFilterTop')].filter(Boolean);
+  if (sels.length === 0) return;
 
-  const current = state.filters.course || sel.value || '';
+  // prefer state, otherwise read from any existing select
+  const current = state.filters.course || (sels[0] ? sels[0].value : '') || '';
   const map = new Map();
 
   (list || []).forEach(s => {
@@ -218,22 +300,40 @@ function rebuildCourseOptions(list){
     return String(a[1]).localeCompare(String(b[1]));
   });
 
-  sel.innerHTML = `<option value="">Todos los cursos</option>`;
-  entries.forEach(([key,label]) => {
-    const opt = document.createElement('option');
-    opt.value = key;
-    opt.textContent = label;
-    sel.appendChild(opt);
+  sels.forEach(sel => {
+    sel.innerHTML = `<option value="">Todos los cursos</option>`;
+    entries.forEach(([key,label]) => {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    });
   });
 
-  // reponer selección si sigue existiendo
+  // reponer selección si sigue existiendo (y sincronizar ambos)
   if (current && map.has(current)) {
-    sel.value = current;
     state.filters.course = current;
   } else {
-    sel.value = '';
     state.filters.course = '';
   }
+  sels.forEach(sel => { sel.value = state.filters.course; });
+}
+
+function syncFiltersUI_(){
+  const cf = $('courseFilter');
+  const cft = $('courseFilterTop');
+  if (cf) cf.value = state.filters.course || '';
+  if (cft) cft.value = state.filters.course || '';
+
+  const op = $('onlyPending');
+  const opt = $('onlyPendingTop');
+  if (op) op.checked = !!state.filters.onlyPending;
+  if (opt) opt.checked = !!state.filters.onlyPending;
+
+  const or = $('onlyRisk');
+  const ort = $('onlyRiskTop');
+  if (or) or.checked = !!state.filters.onlyRisk;
+  if (ort) ort.checked = !!state.filters.onlyRisk;
 }
 
 function escapeHtml(str) {
@@ -384,6 +484,7 @@ function renderOrientacion_(student) {
       await loadStudents();
       const data = await apiCall('getStudentStatus', { ciclo_lectivo: state.ciclo, id_estudiante: student.id_estudiante });
       renderStudent(data.data);
+    hideAppLoader_();
     } catch (err) {
       toast('No pude guardar la orientación: ' + (err?.message || err));
     } finally {
@@ -401,7 +502,7 @@ function renderStudent(data) {
   const s = data.estudiante || {};
   $('studentName').textContent = s.apellido ? `${s.apellido}, ${s.nombre}` : (s.nombre || s.id_estudiante || 'Estudiante');
   const cerrado = (data.materias || []).some(x => !!x.ciclo_cerrado);
-  $('studentMeta').textContent = `${data.ciclo_lectivo} · ${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante || ''}` + (s.egresado ? ' · 🎓 Egresado' : '') + (cerrado ? ' · ✅ Ciclo cerrado' : '');
+  $('studentMeta').textContent = `${data.ciclo_lectivo} · ${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante || ''}` + (cerrado ? ' · ✅ Ciclo cerrado' : '');
 
   renderOrientacion_(s);
 
@@ -430,8 +531,21 @@ function renderStudent(data) {
   renderPills('listIntensifica', b.intensifica);
   renderPills('listAtraso', b.atraso);
 
+  // Accordion counters (Panel)
+  const setCount = (id, n) => { const el = $(id); if (el) el.textContent = `(${n})`; };
+  setCount('accAprobadasCount', b.aprobadas.length);
+  setCount('accAdeudadasCount', b.adeudadas.length);
+  setCount('accPrimeraCount', b.primera.length);
+  setCount('accRecursaCount', b.recursa.length);
+  setCount('accIntensificaCount', b.intensifica.length);
+  setCount('accAtrasoCount', b.atraso.length);
+
   renderEditorTable(materias);
   renderFamilyText(materias, data);
+
+  // Mobile: default to Panel and keep bottom bar in sync
+  if (isMobile_()) setTab_('panel');
+  updateBottomBarState_();
 }
 
 function renderFamilyText(materias, data) {
@@ -532,6 +646,7 @@ function setMateriaField(id_materia, field, value) {
   }
 
   $('btnSave').disabled = state.dirtyByMateria.size === 0;
+  updateBottomBarState_();
   const btnC = $('btnSaveCierre');
   if (btnC) btnC.disabled = state.dirtyByMateria.size === 0;
 
@@ -592,6 +707,37 @@ function setModalVisible(modalId, visible) {
 }
 
 // ======== Cierre por estudiante (modal) ========
+
+function createCierreToggle_(id_materia, current){
+  const wrap = document.createElement('div');
+  wrap.className = 'cierre-toggle';
+
+  const mkBtn = (val, label) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'cierre-btn' + ((current||'') === val ? ' active' : '');
+    b.textContent = label;
+    b.onclick = () => {
+      // update local state + dirty tracking
+      setMateriaField(id_materia, 'resultado_cierre', val);
+      // update visuals
+      [...wrap.querySelectorAll('button')].forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+
+      const { faltan } = cierreProgress_();
+      if (faltan === 0) setMessage('cierreMsg', 'Listo: ya marcaste todas ✅ (guardá para aplicar)', 'ok');
+      else setMessage('cierreMsg', `Te faltan ${faltan} materias por marcar.`, '');
+      updateBottomBarState_();
+    };
+    return b;
+  };
+
+  wrap.appendChild(mkBtn('aprobada', 'Aprobó'));
+  wrap.appendChild(mkBtn('no_aprobada', 'No aprobó'));
+
+  return wrap;
+}
+
 async function openCierreModalForStudent(idEstudiante) {
   // Selecciona estudiante (carga datos) y abre modal
   await selectStudent(idEstudiante);
@@ -631,32 +777,14 @@ function renderCierreModal() {
   target.forEach(m => {
     const tr = document.createElement('tr');
 
-    const sel = document.createElement('select');
-    sel.className = 'select';
-
-    CIERRE_RESULTADOS.forEach(o => {
-      const opt = document.createElement('option');
-      opt.value = o.value;
-      opt.textContent = o.label;
-      if ((m.resultado_cierre || '') === o.value) opt.selected = true;
-      sel.appendChild(opt);
-    });
-
-    sel.onchange = () => {
-      setMateriaField(m.id_materia, 'resultado_cierre', sel.value);
-      // Feedback en el modal: si ya no faltan, avisar
-      const { faltan } = cierreProgress_();
-      if (faltan === 0) setMessage('cierreMsg', 'Listo: ya marcaste todas ✅ (guardá para aplicar)', 'ok');
-      else setMessage('cierreMsg', `Te faltan ${faltan} materias por marcar.`, '');
-    };
-
     tr.innerHTML = `
       <td data-label="Materia">${escapeHtml(m.nombre || m.id_materia)} <div class="muted">${escapeHtml(m.id_materia)}</div></td>
       <td data-label="Año">${escapeHtml(m.anio || '')}</td>
       <td data-label="Situación">${escapeHtml(cierreLabel(m.situacion_actual))}</td>
       <td data-label="Resultado"></td>
     `;
-    tr.children[3].appendChild(sel);
+
+    tr.children[3].appendChild(createCierreToggle_(m.id_materia, (m.resultado_cierre || '').trim()));
     tbody.appendChild(tr);
   });
 
@@ -814,22 +942,48 @@ async function loadStudents() {
   const data = await apiCall('getStudentList', { ciclo_lectivo: state.ciclo });
   state.students = data.students || [];
   rebuildCourseOptions(state.students);
+  syncFiltersUI_();
   renderStudents(state.students);
+
+  // Mobile UX: open picker automatically the first time
+  if (isMobile_() && !state.selectedStudentId && state.students.length) {
+    openStudentPicker_();
+  }
 }
 
 async function selectStudent(id) {
+  // Prevent double taps
+  if (state._selectingStudent) return;
+  state._selectingStudent = true;
+
+  // Immediate feedback (mobile needs it)
+  pulseTopLoader_();
+  const mobile = isMobile_();
+  if (mobile) showAppLoader_('Cargando estudiante…');
+
+  // Force paint before doing heavier work / network
+  await ensurePaint_();
+
+  // If the picker is open, close it now (keyboard resize won't kick us back)
+  if (mobile && isPickingStudent_) closeStudentPicker_();
+
   state.selectedStudentId = id;
   renderStudents(state.students);
 
   setMessage('saveMsg', '', '');
   $('btnSave').disabled = true;
 
-  const ciclo = state.ciclo;
-  const data = await apiCall('getStudentStatus', { ciclo_lectivo: ciclo, id_estudiante: id });
-  renderStudent(data.data);
+  try {
+    const ciclo = state.ciclo;
+    const data = await apiCall('getStudentStatus', { ciclo_lectivo: ciclo, id_estudiante: id });
+    renderStudent(data.data);
+  } finally {
+    if (mobile) hideAppLoader_();
+    state._selectingStudent = false;
+  }
 
   // Mobile UX: after selecting, jump to detail panel
-  if (isMobile_()) {
+  if (mobile) {
     setMobilePanel_('detail');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
@@ -864,6 +1018,36 @@ async function saveChanges() {
 }
 
 
+
+function setTab_(name){
+  const tabs = document.querySelectorAll('.tab');
+  tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  ['panel','editor','familia'].forEach(n => {
+    const el = $(`tab-${n}`);
+    if (el) el.classList.toggle('hidden', n !== name);
+  });
+}
+
+function syncMobileCicloSelect_(){
+  const a = $('cicloSelect');
+  const b = $('cicloSelectMobile');
+  if (!a || !b) return;
+  b.value = a.value;
+}
+
+function updateBottomBarState_(){
+  const save = $('btnBottomSave');
+  const cierre = $('btnBottomCierre');
+  const back = $('btnBottomBack');
+  if (save) save.disabled = (state.dirtyByMateria.size === 0);
+  if (cierre) cierre.disabled = !state.selectedStudentId;
+  if (back) back.disabled = false;
+}
+
+function setMoreModalVisible_(visible){
+  setModalVisible('modalMore', visible);
+  if (visible) syncMobileCicloSelect_();
+}
 function wireTabs() {
   const tabs = document.querySelectorAll('.tab');
   tabs.forEach(t => {
@@ -879,6 +1063,18 @@ function wireTabs() {
 }
 
 function wireEvents() {
+  // Micro-animación al tocar cualquier botón (mobile friendly)
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('button');
+    if (!btn) return;
+    btn.classList.remove('tap');
+    // reflow
+    void btn.offsetWidth;
+    btn.classList.add('tap');
+    setTimeout(() => btn.classList.remove('tap'), 220);
+    pulseTopLoader_();
+  }, true);
+
   $('btnSaveKey').onclick = async () => {
     const key = $('apiKeyInput').value.trim();
     if (!key) return setMessage('gateMsg', 'Pegá la API Key.', 'err');
@@ -887,13 +1083,17 @@ function wireEvents() {
     state.apiKey = key;
 
     try {
+      showAppLoader_('Conectando…');
       await apiCall('ping', {});
       setMessage('gateMsg', '', '');
       setGateVisible(false);
+      showAppLoader_('Cargando ciclos y materias…');
       await loadCycles();
       await loadCatalog();
+      showAppLoader_('Cargando estudiantes…');
       await loadStudents();
     } catch (err) {
+      hideAppLoader_();
       setMessage('gateMsg', 'Clave inválida o backend mal configurado: ' + err.message, 'err');
     }
   };
@@ -903,7 +1103,8 @@ function wireEvents() {
     state.apiKey = null;
     $('apiKeyInput').value = '';
     setMessage('gateMsg', '', '');
-    setGateVisible(true);
+    hideAppLoader_();
+      setGateVisible(true);
   };
 
   $('btnDivisionSummary').onclick = async () => {
@@ -943,6 +1144,11 @@ $('btnRefresh').onclick = async () => {
 
 $('btnRollover').onclick = async () => {
   if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
+
+  const okWarn = confirm(
+    "⚠️ IMPORTANTE\n\nSi NO cerraste la nota de TODOS los estudiantes del ciclo actual, NO continúes con 'Crear ciclo nuevo'.\n\n¿Confirmás que ya cerraste todo y querés continuar?"
+  );
+  if (!okWarn) return;
 
   const origen = (prompt('Año origen (ej. 2026):', state.ciclo) || '').trim();
   if (!origen) return;
@@ -1001,17 +1207,35 @@ $('btnRollover').onclick = async () => {
 
 $('studentSearch').oninput = () => renderStudents(state.students);
 
-  // filtros estudiantes
-  if ($('courseFilter')) $('courseFilter').onchange = () => {
-    state.filters.course = $('courseFilter').value;
+  // filtros estudiantes (mobile dentro del picker + desktop en barra superior)
+  const onCourseChange_ = (val) => {
+    state.filters.course = val || '';
+    syncFiltersUI_();
     renderStudents(state.students);
   };
-  if ($('onlyPending')) $('onlyPending').onchange = () => {
-    state.filters.onlyPending = $('onlyPending').checked;
+  const onPendingChange_ = (checked) => {
+    state.filters.onlyPending = !!checked;
+    syncFiltersUI_();
     renderStudents(state.students);
   };
-  if ($('onlyRisk')) $('onlyRisk').onchange = () => {
-    state.filters.onlyRisk = $('onlyRisk').checked;
+  const onRiskChange_ = (checked) => {
+    state.filters.onlyRisk = !!checked;
+    syncFiltersUI_();
+    renderStudents(state.students);
+  };
+
+  if ($('courseFilter')) $('courseFilter').onchange = () => onCourseChange_($('courseFilter').value);
+  if ($('courseFilterTop')) $('courseFilterTop').onchange = () => onCourseChange_($('courseFilterTop').value);
+  if ($('onlyPending')) $('onlyPending').onchange = () => onPendingChange_($('onlyPending').checked);
+  if ($('onlyPendingTop')) $('onlyPendingTop').onchange = () => onPendingChange_($('onlyPendingTop').checked);
+  if ($('onlyRisk')) $('onlyRisk').onchange = () => onRiskChange_($('onlyRisk').checked);
+  if ($('onlyRiskTop')) $('onlyRiskTop').onchange = () => onRiskChange_($('onlyRiskTop').checked);
+
+  if ($('btnClearFiltersTop')) $('btnClearFiltersTop').onclick = () => {
+    state.filters.course = '';
+    state.filters.onlyPending = false;
+    state.filters.onlyRisk = false;
+    syncFiltersUI_();
     renderStudents(state.students);
   };
 
@@ -1033,13 +1257,64 @@ $('cicloSelect').onchange = async () => {
       setMessage('copyMsg', 'No pude copiar automáticamente. Seleccioná y copiá manual.', 'err');
     }
   };
-  // Mobile panel navigation
-  if ($('btnShowStudents')) $('btnShowStudents').onclick = () => setMobilePanel_('students');
-  if ($('btnShowDetail')) $('btnShowDetail').onclick = () => setMobilePanel_('detail');
-  if ($('btnBackStudents')) $('btnBackStudents').onclick = () => setMobilePanel_('students');
+  // Mobile: student search opens as a modal (PC stays the same)
+  if ($('btnShowStudents')) $('btnShowStudents').onclick = () => openStudentPicker_();
+  if ($('btnShowDetail')) $('btnShowDetail').onclick = () => closeStudentPicker_();
+  if ($('btnBackStudents')) $('btnBackStudents').onclick = () => openStudentPicker_();
+  if ($('btnCloseStudents')) $('btnCloseStudents').onclick = () => closeStudentPicker_();
+  if ($('studentsBackdrop')) $('studentsBackdrop').onclick = () => {
+    // Ignore the "same tap" that just opened the picker
+    if (Date.now() - pickerOpenedAt_ < 250) return;
+    closeStudentPicker_();
+  };
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeStudentPicker_();
+  });
+
+  // Mobile: top menu + bottom bar + quick actions
+  if ($('btnTopMenu')) $('btnTopMenu').onclick = () => setMoreModalVisible_(true);
+  if ($('btnBottomMore')) $('btnBottomMore').onclick = () => setMoreModalVisible_(true);
+  if ($('btnCloseMore')) $('btnCloseMore').onclick = () => setMoreModalVisible_(false);
+  if ($('modalMoreBackdrop')) $('modalMoreBackdrop').onclick = () => setMoreModalVisible_(false);
+
+  if ($('btnBottomBack')) $('btnBottomBack').onclick = () => openStudentPicker_();
+  if ($('btnBottomSave')) $('btnBottomSave').onclick = saveChanges;
+  if ($('btnBottomCierre')) $('btnBottomCierre').onclick = async () => {
+    if (!state.selectedStudentId) return toast('Elegí un/a estudiante primero.');
+    await openCierreModalForStudent(state.selectedStudentId);
+  };
+
+  // Quick Panel buttons
+  if ($('btnQuickEditor')) $('btnQuickEditor').onclick = () => setTab_('editor');
+  if ($('btnQuickFamilia')) $('btnQuickFamilia').onclick = () => setTab_('familia');
+
+  // More modal shortcuts
+  if ($('btnMorePanel')) $('btnMorePanel').onclick = () => { setTab_('panel'); setMoreModalVisible_(false); };
+  if ($('btnMoreEditor')) $('btnMoreEditor').onclick = () => { setTab_('editor'); setMoreModalVisible_(false); };
+  if ($('btnMoreFamilia')) $('btnMoreFamilia').onclick = () => { setTab_('familia'); setMoreModalVisible_(false); };
+
+  // More modal tools (proxy existing buttons)
+  if ($('btnMoreRollover')) $('btnMoreRollover').onclick = () => { $('btnRollover').click(); setMoreModalVisible_(false); };
+  if ($('btnMoreSummary')) $('btnMoreSummary').onclick = () => { $('btnDivisionSummary').click(); setMoreModalVisible_(false); };
+  if ($('btnMoreRefresh')) $('btnMoreRefresh').onclick = () => { $('btnRefresh').click(); setMoreModalVisible_(false); };
+  if ($('btnMoreLogout')) $('btnMoreLogout').onclick = () => { $('btnLogout').click(); setMoreModalVisible_(false); };
+
+  // Close picker if switching to desktop layout
+  window.addEventListener('resize', () => { if (!isMobile_()) closeStudentPicker_(); });
+
+  // Mobile ciclo select sync
+  if ($('cicloSelectMobile')) $('cicloSelectMobile').onchange = () => {
+    $('cicloSelect').value = $('cicloSelectMobile').value;
+    $('cicloSelect').dispatchEvent(new Event('change'));
+    setMoreModalVisible_(false);
+  };
 
   // When resizing, keep a sensible panel visible
   window.addEventListener('resize', () => {
+    const bb = $('mobileBottomBar');
+    if (bb) bb.classList.toggle('hidden', !isMobile_() || $('app').classList.contains('hidden'));
+    updateBottomBarState_();
+
     if (!isMobile_()){
       // on desktop show both
       const students = $('studentsPanel');
@@ -1047,21 +1322,27 @@ $('cicloSelect').onchange = async () => {
       if (students) students.classList.remove('hidden-mobile');
       if (detail) detail.classList.remove('hidden-mobile');
     } else {
-      // on mobile: if no student selected, show students; else keep detail
-      setMobilePanel_(state.selectedStudentId ? 'detail' : 'students');
+      // on mobile: don't open the picker if we're still on the API key gate
+      if (!$('app').classList.contains('hidden')) {
+        if (!isPickingStudent_) setMobilePanel_(state.selectedStudentId ? 'detail' : 'students');
+      }
     }
   }, { passive: true });
 
 }
 
+
 async function init() {
+  // Show the branded loader immediately on first paint
+  startBootLoader_('Cargando…');
+  await ensurePaint_();
+
   wireTabs();
   wireEvents();
 
-  // ciclo default
-
-  // Mobile: start on students panel
-  if (isMobile_()) setMobilePanel_('students');
+  // Mobile: picker opens after loading students (avoid opening over the API key gate)
+  if (isMobile_() && !$('app').classList.contains('hidden')) setMobilePanel_('students');
+  updateBottomBarState_();
 
   state.ciclo = $('cicloSelect').value;
 
@@ -1069,18 +1350,28 @@ async function init() {
   if (saved) {
     state.apiKey = saved;
     try {
+      showAppLoader_('Conectando…');
       await apiCall('ping', {});
       setGateVisible(false);
+
+      showAppLoader_('Cargando ciclos y materias…');
       await loadCycles();
       await loadCatalog();
+
+      showAppLoader_('Cargando estudiantes…');
       await loadStudents();
+
+      hideBootLoader_();
     } catch {
       // clave vieja o backend mal
       setGateVisible(true);
+      hideBootLoader_();
     }
   } else {
     setGateVisible(true);
+    hideBootLoader_();
   }
 }
 
 init();
+

@@ -11,12 +11,12 @@
     <div class="brand">
       <div class="dot"></div>
       <div>
-        <div class="brand-title">TRAYECTORIAS</div>
-        <div class="brand-sub">Seguimiento anual · 12 (regular) + 4 (intensificación)</div>
+        <div class="brand-title">DOCENTES BROWN</div>
+        <div class="brand-sub">Consultora Educativa · Trayectorias (12 regular + 4 intensificación)</div>
       </div>
     </div>
 
-    <div class="top-actions">
+    <div class="top-actions desktop-actions">
       <select id="cicloSelect" class="input small">
         <option value="2026">2026</option>
         <option value="2025">2025</option>
@@ -27,7 +27,21 @@
       <button id="btnRefresh" class="btn ghost">Actualizar</button>
       <button id="btnLogout" class="btn ghost">Cambiar clave</button>
     </div>
+    <button id="btnTopMenu" class="btn ghost mobile-only" type="button">Menú</button>
   </header>
+
+  <!-- Desktop only: filtros horizontales debajo del header (no sticky) -->
+  <div id="desktopFiltersBar" class="desktop-filters desktop-only" aria-label="Filtros">
+    <div class="df-inner">
+      <div class="df-title">Filtros</div>
+      <select id="courseFilterTop" class="select">
+        <option value="">Todos los cursos</option>
+      </select>
+      <label class="chk"><input type="checkbox" id="onlyPendingTop" /> Faltan cargar</label>
+      <label class="chk"><input type="checkbox" id="onlyRiskTop" /> En riesgo</label>
+      <button id="btnClearFiltersTop" class="btn ghost" type="button">Limpiar</button>
+    </div>
+  </div>
 
   <main class="container">
     <!-- Gate API key -->
@@ -53,9 +67,12 @@
       <!-- Left: students -->
       <aside id="studentsPanel" class="card">
         <div class="aside-head">
-          <h2>Estudiantes</h2>
+          <div class="aside-head-top">
+            <h2>Estudiantes</h2>
+            <button id="btnCloseStudents" class="btn ghost mobile-only" type="button">Cerrar</button>
+          </div>
           <input id="studentSearch" class="input" placeholder="Buscar por nombre, división o ID…" />
-          <div class="filters">
+          <div class="filters mobile-only">
             <select id="courseFilter" class="select">
               <option value="">Todos los cursos</option>
             </select>
@@ -69,7 +86,7 @@
       <!-- Right: student details -->
       <section id="detailPanel" class="card">
         <div class="student-head">
-          <button id="btnBackStudents" class="btn ghost mobile-only" type="button">← Estudiantes</button>
+          <button id="btnBackStudents" class="btn ghost mobile-only" type="button">Buscar estudiante</button>
           <div>
             <h2 id="studentName">Seleccioná un/a estudiante</h2>
             <div id="studentMeta" class="muted"></div>
@@ -113,42 +130,48 @@
           <button class="tab" data-tab="familia">Mensaje a familia</button>
         </div>
 
-        <div id="tab-panel" class="tabcontent">
-          <div class="cols">
-            <div class="col">
-              <h3>✅ Aprobadas</h3>
-              <div id="listAprobadas" class="pilllist"></div>
-            </div>
-            <div class="col">
-              <h3>❌ Adeudadas</h3>
-              <div id="listAdeudadas" class="pilllist"></div>
-            </div>
-          </div>
+        
+<div id="tab-panel" class="tabcontent">
+  <div class="panel-sections" id="panelSections">
+    <details class="acc" open>
+      <summary>✅ Aprobadas <span id="accAprobadasCount" class="acc-count"></span></summary>
+      <div class="acc-body"><div id="listAprobadas" class="pilllist"></div></div>
+    </details>
 
-          <div class="cols">
-            <div class="col">
-              <h3>📘 Cursa 1ra vez</h3>
-              <div id="listPrimera" class="pilllist"></div>
-            </div>
-            <div class="col">
-              <h3>🔁 Recursa</h3>
-              <div id="listRecursa" class="pilllist"></div>
-            </div>
-          </div>
+    <details class="acc" open>
+      <summary>❌ Adeudadas <span id="accAdeudadasCount" class="acc-count"></span></summary>
+      <div class="acc-body"><div id="listAdeudadas" class="pilllist"></div></div>
+    </details>
 
-          <div class="cols">
-            <div class="col">
-              <h3>⚡ Intensifica</h3>
-              <div id="listIntensifica" class="pilllist"></div>
-            </div>
-            <div class="col">
-              <h3>⛔ Atraso por tope</h3>
-              <div id="listAtraso" class="pilllist"></div>
-            </div>
-          </div>
-        </div>
+    <details class="acc">
+      <summary>📘 Cursa 1ra vez <span id="accPrimeraCount" class="acc-count"></span></summary>
+      <div class="acc-body"><div id="listPrimera" class="pilllist"></div></div>
+    </details>
 
-        <div id="tab-editor" class="tabcontent hidden">
+    <details class="acc">
+      <summary>🔁 Recursa <span id="accRecursaCount" class="acc-count"></span></summary>
+      <div class="acc-body"><div id="listRecursa" class="pilllist"></div></div>
+    </details>
+
+    <details class="acc">
+      <summary>⚡ Intensifica <span id="accIntensificaCount" class="acc-count"></span></summary>
+      <div class="acc-body"><div id="listIntensifica" class="pilllist"></div></div>
+    </details>
+
+    <details class="acc">
+      <summary>⛔ Atraso por tope <span id="accAtrasoCount" class="acc-count"></span></summary>
+      <div class="acc-body"><div id="listAtraso" class="pilllist"></div></div>
+    </details>
+  </div>
+
+  <div class="quick-actions mobile-only" style="margin-top:12px">
+    <button id="btnQuickEditor" class="btn">Editar plan anual</button>
+    <button id="btnQuickFamilia" class="btn">Mensaje a familia</button>
+  </div>
+</div>
+
+<div id="tab-editor"
+ class="tabcontent hidden">
           <div class="editor-head">
             <p class="muted">
               Elegí la situación actual de cada materia. La app valida: <b>12</b> regular (1ra vez + recursa) y <b>4</b> intensificación (no cuenta en las 12).
@@ -188,6 +211,58 @@
       </section>
     </section>
   </main>
+
+  <div id="studentsBackdrop" class="students-backdrop hidden" aria-hidden="true"></div>
+
+  <!-- Bottom bar (mobile) -->
+  <div id="mobileBottomBar" class="bottom-bar hidden" aria-label="Acciones rápidas">
+    <button id="btnBottomBack" class="bb-btn" type="button">Buscar</button>
+    <button id="btnBottomCierre" class="bb-btn" type="button">Cierre</button>
+    <button id="btnBottomSave" class="bb-btn primary" type="button" disabled>Guardar</button>
+    <button id="btnBottomMore" class="bb-btn" type="button">Más</button>
+  </div>
+
+  <!-- Modal: Más opciones (mobile) -->
+  <div id="modalMore" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" id="modalMoreBackdrop"></div>
+    <div class="modal-card modal-card-narrow">
+      <div class="modal-head">
+        <h2>Más opciones</h2>
+        <button id="btnCloseMore" class="btn ghost" type="button">Cerrar</button>
+      </div>
+
+      <div class="more-grid">
+        <div class="more-block">
+          <div class="more-title">Pantalla</div>
+          <div class="more-actions">
+            <button id="btnMorePanel" class="btn ghost" type="button">Panel</button>
+            <button id="btnMoreEditor" class="btn ghost" type="button">Editor</button>
+            <button id="btnMoreFamilia" class="btn ghost" type="button">Familia</button>
+          </div>
+        </div>
+
+        <div class="more-block">
+          <div class="more-title">Ciclo lectivo</div>
+          <select id="cicloSelectMobile" class="input">
+            <option value="2026">2026</option>
+            <option value="2025">2025</option>
+            <option value="2024">2024</option>
+          </select>
+        </div>
+
+        <div class="more-block">
+          <div class="more-title">Herramientas</div>
+          <div class="more-actions">
+            <button id="btnMoreRollover" class="btn ghost danger" type="button">Crear ciclo nuevo</button>
+            <button id="btnMoreSummary" class="btn ghost" type="button">Resumen por división</button>
+            <button id="btnMoreRefresh" class="btn ghost" type="button">Actualizar</button>
+            <button id="btnMoreLogout" class="btn ghost" type="button">Cambiar clave</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 
 
     <!-- Modal: Resumen por división -->
@@ -265,5 +340,20 @@
   <script src="config.js"></script>
   <script src="app.js"></script>
   <div id="toast" class="toast" aria-live="polite"></div>
+  <div id="topLoader" class="top-loader hidden" aria-hidden="true"></div>
+  <div id="appLoader" class="app-loader" role="status" aria-live="polite">
+    <div class="loader-card">
+      <div class="loader-brand">
+        <div class="loader-title">DOCENTES BROWN</div>
+        <div class="loader-sub">Diseñado por <strong>Docentes Brown</strong> para utilizar por el <strong>EDTE</strong></div>
+      </div>
+      <div class="loader-row">
+        <div class="spinner" aria-hidden="true"></div>
+        <div id="appLoaderText" class="loader-text">Cargando…</div>
+      </div>
+</div>
+    </div>
+  </div>
+
 </body>
 </html>
