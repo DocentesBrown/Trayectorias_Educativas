@@ -116,7 +116,7 @@ Acciones:
 
 ## 5) Rollover anual (nuevo ciclo) + Promoción de estudiantes
 - En la app: botón **Crear ciclo nuevo**.
-- Crea filas en `EstadoPorCiclo` para el ciclo destino, para todos los estudiantes activos, pero **solo con las materias que corresponden por año/orientación** (no crea años futuros).
+- Crea filas en `EstadoPorCiclo` para el ciclo destino, para todos los estudiantes activos y todas las materias del catálogo.
 - No modifica ni borra ciclos anteriores.
 - La situación inicial del nuevo ciclo queda neutral (`no_cursa_otro_motivo`) para que el equipo cargue el plan anual.
 
@@ -127,7 +127,3 @@ Durante el rollover, podés elegir actualizar la pestaña **Estudiantes**:
 - `division` intenta sumar 1 al número inicial (ej: 4°A → 5°A)
 
 Si alguna división no se puede interpretar, se deja igual.
-
-
-### Nota (optimización)
-- La app usa `syncCatalogRows` al abrir un/a estudiante para crear filas faltantes **solo cuando hacen falta** (por ejemplo, al pasar de año o elegir orientación).

@@ -22,8 +22,10 @@
         <option value="2025">2025</option>
         <option value="2024">2024</option>
       </select>
-      <button id="btnRollover" class="btn ghost">Crear ciclo nuevo</button>
+      <button id="btnRollover" class="btn ghost danger">Crear ciclo nuevo</button>
       <button id="btnDivisionSummary" class="btn ghost">Resumen por división</button>
+      <button id="btnViewEgresados" class="btn ghost">Ver egresados</button>
+      <button id="btnCleanApproved" class="btn ghost">Limpiar aprobadas</button>
       <button id="btnRefresh" class="btn ghost">Actualizar</button>
       <button id="btnLogout" class="btn ghost">Cambiar clave</button>
     </div>
@@ -255,6 +257,8 @@
           <div class="more-actions">
             <button id="btnMoreRollover" class="btn ghost danger" type="button">Crear ciclo nuevo</button>
             <button id="btnMoreSummary" class="btn ghost" type="button">Resumen por división</button>
+            <button id="btnMoreViewEgresados" class="btn ghost" type="button">Ver egresados</button>
+            <button id="btnMoreCleanApproved" class="btn ghost" type="button">Limpiar aprobadas</button>
             <button id="btnMoreRefresh" class="btn ghost" type="button">Actualizar</button>
             <button id="btnMoreLogout" class="btn ghost" type="button">Cambiar clave</button>
           </div>
@@ -262,6 +266,36 @@
       </div>
     </div>
   </div>
+
+
+
+    <!-- Modal: Egresados -->
+    <div id="modalEgresados" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" id="modalEgresadosBackdrop"></div>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2>Egresados</h2>
+          <button id="btnCloseEgresados" class="btn ghost">Cerrar</button>
+        </div>
+        <div class="row" style="gap:10px; margin-top:6px;">
+          <input id="egresadosSearch" class="input" placeholder="Buscar por apellido / nombre" />
+          <button id="btnRefreshEgresados" class="btn">Actualizar</button>
+        </div>
+        <div class="table-wrap" style="margin-top:10px;">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Apellido</th>
+                <th>Nombre</th>
+                <th>Año egreso</th>
+              </tr>
+            </thead>
+            <tbody id="egresadosTbody"></tbody>
+          </table>
+        </div>
+        <div id="egresadosMsg" class="msg"></div>
+      </div>
+    </div>
 
 
 

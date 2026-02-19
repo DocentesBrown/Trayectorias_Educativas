@@ -51,6 +51,7 @@ let state = {
   apiKey: null,
   ciclo: '2026',
   students: [],
+  egresados: [],
   selectedStudentId: null,
   studentData: null,
   catalog: [],
@@ -210,6 +211,15 @@ function renderStudents(list) {
     filtered = filtered.filter(s => !!s.en_riesgo);
   }
 
+  // Orden visual: los estudiantes con cierre completo van al fondo (mantiene orden relativo del backend)
+  const decorated = filtered.map((s, i) => ({ s, i }));
+  decorated.sort((a, b) => {
+    const da = a.s && a.s.cierre_completo ? 1 : 0;
+    const db = b.s && b.s.cierre_completo ? 1 : 0;
+    return (da - db) || (a.i - b.i);
+  });
+  filtered = decorated.map(d => d.s);
+
   const el = $('studentsList');
   el.innerHTML = '';
 
@@ -368,6 +378,7 @@ function computeBuckets(materias, student) {
     const sit = (m.situacion_actual || '').trim();
 
     if (cond === 'aprobada') buckets.aprobadas.push(m);
+    if (cond === 'aprobada') return;
     if (cond === 'adeuda') {
       // Contar como "adeuda" SOLO las materias de años anteriores (no año en curso ni futuros)
       const sitLc = String(sit || '').trim();
@@ -849,12 +860,25 @@ async function saveChangesFromCierreModal() {
     const res = await apiCall('saveStudentStatus', payload);
 
     // 2) Aplicar automáticamente el cierre (resultado_cierre -> condicion_academica)
-    await apiCall('closeCycle', {
+    const closeRes = await apiCall('closeCycle', {
       ciclo_lectivo: state.ciclo,
       id_estudiante: state.selectedStudentId,
       usuario: 'web',
       marcar_cerrado: true
     });
+
+    // Si el estudiante quedó sin adeudas, el backend lo pasa a "Egresados" y lo saca de Estudiantes.
+    if (closeRes && closeRes.data && closeRes.data.moved_to_egresados) {
+      toast('Pasó a Egresados ✅', 'ok');
+      setMessage('cierreMsg', 'Pasó a Egresados ✅', 'ok');
+      setModalVisible('modalCierre', false);
+      await loadStudents();
+      state.selectedStudentId = null;
+      state.studentData = null;
+      clearStudentUI_();
+      setBtnLoading($('btnSaveCierre'), false);
+      return;
+    }
 
     // 3) Refrescar panel + lista + resumen sin crear ciclo nuevo
     const fresh = await apiCall('getStudentStatus', { ciclo_lectivo: state.ciclo, id_estudiante: state.selectedStudentId });
@@ -871,6 +895,29 @@ async function saveChangesFromCierreModal() {
   } catch (err) {
     setMessage('cierreMsg', 'Error al guardar: ' + err.message, 'err');
     setBtnLoading($('btnSaveCierre'), false);
+  }
+}
+
+function clearStudentUI_() {
+  // Deja el panel derecho en estado "sin selección" (sin romper nada de lo que ya funciona)
+  try {
+    $('studentName').textContent = 'Seleccioná un/a estudiante';
+    $('studentMeta').textContent = '';
+    if ($('regularCount')) $('regularCount').textContent = '0';
+    if ($('intCount')) $('intCount').textContent = '0';
+    if ($('adeudaCount')) $('adeudaCount').textContent = '0';
+    if ($('aprobadaCount')) $('aprobadaCount').textContent = '0';
+    const lists = ['listAprobadas','listAdeudadas','listPrimera','listRecursa','listIntensifica','listAtraso'];
+    lists.forEach(id => { if ($(id)) $(id).innerHTML = ''; });
+    if ($('materiasTbody')) $('materiasTbody').innerHTML = '';
+    if ($('familyText')) $('familyText').value = '';
+    if ($('saveMsg')) setMessage('saveMsg', '', '');
+    state.originalByMateria && state.originalByMateria.clear();
+    state.dirtyByMateria && state.dirtyByMateria.clear();
+    if ($('btnSave')) $('btnSave').disabled = true;
+    updateBottomBarState_();
+  } catch (e) {
+    // no-op
   }
 }
 
@@ -905,6 +952,47 @@ async function loadDivisionSummary() {
     setMessage('summaryMsg', '', '');
   } catch (err) {
     setMessage('summaryMsg', 'Error: ' + err.message, 'err');
+  }
+}
+
+// ======== EGRESADOS (modal) ========
+
+function renderEgresados_() {
+  const tbody = $('egresadosTbody');
+  if (!tbody) return;
+  const q = String(($('egresadosSearch') && $('egresadosSearch').value) || '').trim().toLowerCase();
+
+  let rows = (state.egresados || []).slice();
+  if (q) {
+    rows = rows.filter(e => `${e.apellido || ''} ${e.nombre || ''}`.toLowerCase().includes(q));
+  }
+
+  tbody.innerHTML = '';
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="3" class="muted">Sin egresados para mostrar.</td></tr>`;
+    return;
+  }
+
+  rows.forEach(e => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td data-label="Apellido"><b>${escapeHtml(e.apellido || '')}</b></td>
+      <td data-label="Nombre">${escapeHtml(e.nombre || '')}</td>
+      <td data-label="Año egreso">${escapeHtml(e.ciclo_egreso || '')}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function loadEgresados_() {
+  setMessage('egresadosMsg', 'Cargando…', '');
+  try {
+    const res = await apiCall('getEgresados', {});
+    state.egresados = (res.data && res.data.egresados) ? res.data.egresados : [];
+    renderEgresados_();
+    setMessage('egresadosMsg', '', '');
+  } catch (err) {
+    setMessage('egresadosMsg', 'Error: ' + err.message, 'err');
   }
 }
 
@@ -994,16 +1082,6 @@ async function selectStudent(id) {
 
   try {
     const ciclo = state.ciclo;
-
-    // Asegura que existan filas mínimas en EstadoPorCiclo para este estudiante/ciclo (modo "lazy").
-    // Esto evita inflar la planilla con materias de años futuros.
-    try {
-      await apiCall('syncCatalogRows', { ciclo_lectivo: ciclo, id_estudiante: id, usuario: 'web' });
-    } catch (e) {
-      // No frenamos la carga por un sync: el status puede existir igual
-      console.warn('syncCatalogRows falló:', e);
-    }
-
     const data = await apiCall('getStudentStatus', { ciclo_lectivo: ciclo, id_estudiante: id });
     renderStudent(data.data);
   } finally {
@@ -1147,6 +1225,52 @@ function wireEvents() {
   }
 };
 
+  // Modal Egresados
+  if ($('btnViewEgresados')) $('btnViewEgresados').onclick = async () => {
+    if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
+    setModalVisible('modalEgresados', true);
+    setBtnLoading($('btnViewEgresados'), true, 'Cargando…');
+    try {
+      await loadEgresados_();
+    } finally {
+      setBtnLoading($('btnViewEgresados'), false);
+    }
+  };
+  if ($('btnCloseEgresados')) $('btnCloseEgresados').onclick = () => setModalVisible('modalEgresados', false);
+  if ($('modalEgresadosBackdrop')) $('modalEgresadosBackdrop').onclick = () => setModalVisible('modalEgresados', false);
+  if ($('btnRefreshEgresados')) $('btnRefreshEgresados').onclick = async () => {
+    setBtnLoading($('btnRefreshEgresados'), true, 'Actualizando…');
+    try { await loadEgresados_(); } finally { setBtnLoading($('btnRefreshEgresados'), false); }
+  };
+  if ($('egresadosSearch')) $('egresadosSearch').oninput = () => renderEgresados_();
+
+  // Limpiar aprobadas
+  if ($('btnCleanApproved')) $('btnCleanApproved').onclick = async () => {
+    if (!state.apiKey && !localStorage.getItem(LS_KEY)) return;
+    const ok = confirm(
+      "⚠️ LIMPIEZA DE APROBADAS\n\n" +
+      "Esto va a mover TODAS las filas con condición 'APROBADA' desde 'EstadoPorCiclo' a 'MateriasAprobadas_Limpieza'.\n\n" +
+      "No borra datos: los reubica para achicar EstadoPorCiclo.\n\n¿Continuar?"
+    );
+    if (!ok) return;
+    setBtnLoading($('btnCleanApproved'), true, 'Limpiando…');
+    try {
+      const res = await apiCall('cleanApprovedRows', {});
+      alert(
+        `Listo ✅\n\nFilas movidas: ${res.data.filas_aprobadas_movidas}\nFilas restantes en EstadoPorCiclo: ${res.data.filas_restantes}`
+      );
+      await loadStudents();
+      if (state.selectedStudentId) {
+        // Si el estudiante sigue existiendo, refrescamos su detalle
+        try { await selectStudent(state.selectedStudentId); } catch (e) {}
+      }
+    } catch (err) {
+      alert('Error: ' + err.message);
+    } finally {
+      setBtnLoading($('btnCleanApproved'), false);
+    }
+  };
+
 $('btnCloseSummary').onclick = () => setModalVisible('modalSummary', false);
 $('modalSummaryBackdrop').onclick = () => setModalVisible('modalSummary', false);
 $('btnRefreshSummary').onclick = async () => {
@@ -1182,6 +1306,34 @@ $('btnRollover').onclick = async () => {
   const origen = (prompt('Año origen (ej. 2026):', state.ciclo) || '').trim();
   if (!origen) return;
 
+  // Chequeo obligatorio: NO permitir crear ciclo nuevo si hay estudiantes con materias sin cierre en el ciclo origen
+  try {
+    // (usa el backend para que sea 100% confiable aunque la lista local esté desactualizada)
+    const chk = await apiCall('getStudentList', { ciclo_lectivo: origen });
+    const pend = (chk.students || []).filter(s => Number(s.cierre_pendiente || 0) > 0);
+
+    if (pend.length > 0) {
+      const sample = pend.slice(0, 10).map(s =>
+        `${s.apellido}, ${s.nombre} (${s.division || ''} · faltan ${Number(s.cierre_pendiente || 0)})`
+      ).join('\n');
+
+      alert(
+        `No podés crear el ciclo nuevo todavía.\n\n` +
+        `Hay ${pend.length} estudiante(s) con materias sin cierre en el ciclo ${origen}.\n\n` +
+        (sample ? `Ejemplos:\n${sample}\n\n` : '') +
+        `Cerrá esas materias (botón "Cierre") y volvé a intentar.`
+      );
+
+      // Refrescar lista para que veas pendientes arriba (y si estás filtrando, se actualiza)
+      await loadStudents();
+      return;
+    }
+  } catch (e) {
+    console.error(e);
+    alert('No pude verificar si faltan cierres. Probá nuevamente o revisá tu conexión/API KEY.');
+    return;
+  }
+
   let sugerido = '';
   const n = Number(origen);
   if (!isNaN(n)) sugerido = String(n + 1);
@@ -1193,7 +1345,7 @@ $('btnRollover').onclick = async () => {
 
   const ok = confirm(
     `Esto va a crear (si no existen) filas en EstadoPorCiclo para el ciclo ${destino}, ` +
-    `para TODOS los estudiantes activos, pero SOLO con las materias que corresponden por año/orientación (modo liviano).
+    `para TODOS los estudiantes activos y TODAS las materias del catálogo.
 
 ` +
     `No borra ni modifica ciclos anteriores.
@@ -1325,6 +1477,8 @@ $('cicloSelect').onchange = async () => {
   // More modal tools (proxy existing buttons)
   if ($('btnMoreRollover')) $('btnMoreRollover').onclick = () => { $('btnRollover').click(); setMoreModalVisible_(false); };
   if ($('btnMoreSummary')) $('btnMoreSummary').onclick = () => { $('btnDivisionSummary').click(); setMoreModalVisible_(false); };
+  if ($('btnMoreViewEgresados')) $('btnMoreViewEgresados').onclick = () => { if ($('btnViewEgresados')) $('btnViewEgresados').click(); setMoreModalVisible_(false); };
+  if ($('btnMoreCleanApproved')) $('btnMoreCleanApproved').onclick = () => { if ($('btnCleanApproved')) $('btnCleanApproved').click(); setMoreModalVisible_(false); };
   if ($('btnMoreRefresh')) $('btnMoreRefresh').onclick = () => { $('btnRefresh').click(); setMoreModalVisible_(false); };
   if ($('btnMoreLogout')) $('btnMoreLogout').onclick = () => { $('btnLogout').click(); setMoreModalVisible_(false); };
 
