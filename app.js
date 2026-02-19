@@ -231,12 +231,12 @@ function renderStudents(list) {
       <div class="item-head">
         <div>
           <div class="title">${escapeHtml(`${s.apellido}, ${s.nombre}`)}</div>
-          <div class="sub">${escapeHtml(`${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante}`)}</div>
+          <div class="sub">${escapeHtml(`${s.division || ''} · ${s.turno || ''} · Año: ${s.egresado ? 'EG' : (s.anio_actual || '—')} · ID: ${s.id_estudiante}`)}</div>
           <div class="chips">
             ${done ? `<span class="chip ok">Cierre ✅</span>` : ``}
             ${Number(s.cierre_pendiente||0) > 0 ? `<span class="chip warn">Faltan ${Number(s.cierre_pendiente||0)}</span>` : (!done ? `<span class="chip info">Al día</span>` : ``)}
-            ${s.es_egresado ? `<span class="chip info">Egresado</span>` : ``}
             ${risk ? `<span class="chip warn">Riesgo</span>` : ``}
+            ${s.egresado ? `<span class="chip info">Egresado</span>` : ``}
             ${needs ? `<span class="chip warn">Revisar</span>` : ``}
           </div>
         </div>
@@ -270,10 +270,13 @@ function renderStudents(list) {
 
 
 function courseKey_(s){
-  return `${s.anio_actual || ''}|${s.division || ''}|${s.turno || ''}`;
+  const isEgresado = !!s.egresado;
+  const y = isEgresado ? 'EG' : (s.anio_actual || '');
+  return `${y}|${s.division || ''}|${s.turno || ''}`;
 }
 function courseLabel_(s){
-  const a = (s.anio_actual !== undefined && s.anio_actual !== null && s.anio_actual !== '') ? `${s.anio_actual}º` : '';
+  const isEgresado = !!s.egresado;
+  const a = isEgresado ? 'EG' : ((s.anio_actual !== undefined && s.anio_actual !== null && s.anio_actual !== '') ? `${s.anio_actual}º` : '');
   const d = (s.division || '—');
   const t = (s.turno || '');
   return `${a} ${d}${t ? ' · ' + t : ''}`.trim();
@@ -295,8 +298,10 @@ function rebuildCourseOptions(list){
 
   const entries = Array.from(map.entries()).sort((a,b) => {
     // sort by year number then label
-    const ya = Number(String(a[0]).split('|')[0] || 0);
-    const yb = Number(String(b[0]).split('|')[0] || 0);
+    const rawA = String(a[0]).split('|')[0] || '';
+    const rawB = String(b[0]).split('|')[0] || '';
+    const ya = (rawA === 'EG') ? 99 : Number(rawA || 0);
+    const yb = (rawB === 'EG') ? 99 : Number(rawB || 0);
     if (ya !== yb) return ya - yb;
     return String(a[1]).localeCompare(String(b[1]));
   });
@@ -348,8 +353,7 @@ function setMessage(elId, text, kind) {
   el.className = 'msg' + (kind ? ' ' + kind : '');
 }
 
-
-function computeBuckets(materias, studentYear, isEgresado) {
+function computeBuckets(materias, student) {
   const buckets = {
     aprobadas: [],
     adeudadas: [],
@@ -359,20 +363,25 @@ function computeBuckets(materias, studentYear, isEgresado) {
     atraso: []
   };
 
-  const y = Number(studentYear || '');
-  const isEgr = !!isEgresado;
-
   materias.forEach(m => {
     const cond = (m.condicion_academica || '').trim().toLowerCase();
     const sit = (m.situacion_actual || '').trim();
-    const res = String(m.resultado_cierre || '').trim().toLowerCase();
-    const matYear = Number(m.anio || '');
 
     if (cond === 'aprobada') buckets.aprobadas.push(m);
+    if (cond === 'adeuda') {
+      // Contar como "adeuda" SOLO las materias de años anteriores (no año en curso ni futuros)
+      const sitLc = String(sit || '').trim();
+      const stYear = student ? Number(student.anio_actual || '') : NaN;
+      const matYear = Number(m.anio || '');
+      const hasYears = (!isNaN(stYear) && !isNaN(matYear));
 
-    const isAdeuda = (cond === 'adeuda') || (res === 'no_aprobada' || res === 'no aprobada' || res === 'no_aprobo' || res === 'no');
-    const cuentaAdeuda = isAdeuda && sit !== 'proximos_anos' && (isEgr || isNaN(matYear) || isNaN(y) || matYear < y);
-    if (cuentaAdeuda) buckets.adeudadas.push(m);
+      // Con años disponibles: solo anteriores. Sin años: aproximación segura por situación.
+      const countsAsAdeuda = hasYears
+        ? (matYear < stYear)
+        : (sitLc !== 'proximos_anos' && sitLc !== 'cursa_primera_vez');
+
+      if (countsAsAdeuda) buckets.adeudadas.push(m);
+    }
 
     if (sit === 'cursa_primera_vez') buckets.primera.push(m);
     if (sit === 'recursa') buckets.recursa.push(m);
@@ -512,7 +521,7 @@ function renderStudent(data) {
   const s = data.estudiante || {};
   $('studentName').textContent = s.apellido ? `${s.apellido}, ${s.nombre}` : (s.nombre || s.id_estudiante || 'Estudiante');
   const cerrado = (data.materias || []).some(x => !!x.ciclo_cerrado);
-  $('studentMeta').textContent = `${data.ciclo_lectivo} · ${s.division || ''} · ${s.turno || ''} · Año: ${s.anio_actual || '—'} · ID: ${s.id_estudiante || ''}` + (s.es_egresado ? ' · 🎓 EGRESADO' : '') + (cerrado ? ' · ✅ Ciclo cerrado' : '');
+  $('studentMeta').textContent = `${data.ciclo_lectivo} · ${s.division || ''} · ${s.turno || ''} · ${s.egresado ? 'Egresado · ' : ''}Año: ${s.egresado ? 'EG' : (s.anio_actual || '—')} · ID: ${s.id_estudiante || ''}` + (cerrado ? ' · ✅ Ciclo cerrado' : '');
 
   renderOrientacion_(s);
 
@@ -524,7 +533,7 @@ function renderStudent(data) {
   });
 
   // stats & buckets
-  const b = computeBuckets(materias, s.anio_actual, s.es_egresado);
+  const b = computeBuckets(materias, s);
   const c = counts(materias);
 
   $('regularCount').textContent = String(c.regular);
@@ -562,7 +571,7 @@ function renderFamilyText(materias, data) {
   const s = data.estudiante || {};
   const { regular, intens } = counts(materias);
 
-  const b = computeBuckets(materias, s.anio_actual, s.es_egresado);
+  const b = computeBuckets(materias, s);
 
   const lines = [];
   lines.push(`Hola, compartimos el plan anual de trayectoria de ${s.apellido ? `${s.apellido}, ${s.nombre}` : (s.nombre || 'el/la estudiante')} (${data.ciclo_lectivo}).`);
@@ -985,6 +994,16 @@ async function selectStudent(id) {
 
   try {
     const ciclo = state.ciclo;
+
+    // Asegura que existan filas mínimas en EstadoPorCiclo para este estudiante/ciclo (modo "lazy").
+    // Esto evita inflar la planilla con materias de años futuros.
+    try {
+      await apiCall('syncCatalogRows', { ciclo_lectivo: ciclo, id_estudiante: id, usuario: 'web' });
+    } catch (e) {
+      // No frenamos la carga por un sync: el status puede existir igual
+      console.warn('syncCatalogRows falló:', e);
+    }
+
     const data = await apiCall('getStudentStatus', { ciclo_lectivo: ciclo, id_estudiante: id });
     renderStudent(data.data);
   } finally {
@@ -1174,7 +1193,7 @@ $('btnRollover').onclick = async () => {
 
   const ok = confirm(
     `Esto va a crear (si no existen) filas en EstadoPorCiclo para el ciclo ${destino}, ` +
-    `para TODOS los estudiantes activos y TODAS las materias del catálogo.
+    `para TODOS los estudiantes activos, pero SOLO con las materias que corresponden por año/orientación (modo liviano).
 
 ` +
     `No borra ni modifica ciclos anteriores.
