@@ -15,9 +15,7 @@ const SHEETS = {
   ESTUDIANTES: 'Estudiantes',
   CATALOGO: 'MateriasCatalogo',
   ESTADO: 'EstadoPorCiclo',
-  AUDITORIA: 'Auditoria',
-  EGRESADOS: 'Egresados',
-  APROB_LIMPIEZA: 'MateriasAprobadas_Limpieza'
+  AUDITORIA: 'Auditoria'
 };
 
 const PROP_API_KEY = 'TRAYECTORIAS_API_KEY';
@@ -96,7 +94,7 @@ function doGet() {
     ok: true,
     service: 'Trayectorias Backend',
     endpoints: ['POST {apiKey, action, payload}'],
-    actions: ['ping','getCycles','getCatalog','getStudentList','getStudentStatus','saveStudentStatus','updateStudentOrientation','syncCatalogRows','rolloverCycle','getDivisionRiskSummary','closeCycle','cleanApprovedRows','getEgresados']
+    actions: ['ping','getCycles','getCatalog','getStudentList','getStudentStatus','saveStudentStatus','syncCatalogRows','rolloverCycle','getDivisionRiskSummary','closeCycle']
   }, 200);
 }
 
@@ -141,12 +139,6 @@ function handleRequest_(req) {
 
     case 'closeCycle':
       return { ok: true, data: closeCycle_(payload) };
-
-    case 'cleanApprovedRows':
-      return { ok: true, data: cleanApprovedRows_(payload) };
-
-    case 'getEgresados':
-      return { ok: true, data: getEgresados_(payload) };
 
     default:
       return { ok: false, error: 'Acción desconocida: ' + action };
@@ -474,11 +466,15 @@ function rolloverCycle_(payload) {
 
       if (existsDest[key]) { skipped++; return; }
 
+      // En el ciclo nuevo NO copiamos materias ya aprobadas en ciclos anteriores.
+      // Solo trabajamos con: materias ADEUDADAS + materias del AÑO que corresponde.
       const approved = !!approvedMap[key];
+      if (approved) { skipped++; return; }
+
       const everRegular = !!regularMap[key];
 
-      const condicion = approved ? 'aprobada' : 'adeuda';
-      const nunca = approved ? false : !everRegular;
+      const condicion = 'adeuda';
+      const nunca = !everRegular;
 
       const obj = {};
       headers.forEach(h => obj[h] = '');
@@ -526,7 +522,7 @@ function rolloverCycle_(payload) {
     activeSet[s.id_estudiante] = true;
     const oldYear = Number(s.anio_actual || '');
     oldYearByStudent[s.id_estudiante] = (!isNaN(oldYear) && oldYear > 0) ? Math.min(oldYear, 6) : null;
-    newGradeByStudent[s.id_estudiante] = (!isNaN(oldYear) && oldYear > 0) ? Math.min(oldYear + 1, 6) : null;
+    newGradeByStudent[s.id_estudiante] = (!isNaN(oldYear) && oldYear > 0) ? Math.min((updateStudents ? (oldYear + 1) : oldYear), 6) : null;
   });
 
   const catalogByYear = {};
@@ -625,7 +621,15 @@ function rolloverCycle_(payload) {
     const newYear = newGradeByStudent[sid];
     if (!newYear) return;
 
-    const newYearMats = (catalogByYear[newYear] || []).slice();
+    const oldYear = oldYearByStudent[sid];
+    let newYearMats = [];
+    if (!(updateStudents && oldYear === 6)) {
+      const sDest = Object.assign({}, s, { anio_actual: newYear });
+      newYearMats = filterCatalogForStudent_(catalog, sDest)
+        .filter(mm => Number(mm.anio || '') === Number(newYear))
+        .map(mm => String(mm.id_materia || '').trim())
+        .filter(Boolean);
+    }
     const owedAll = (owedByStudent[sid] || []).slice();
 
     // Tope: intensifica máx 4 adeudadas
@@ -1193,16 +1197,44 @@ function syncCatalogRows_(payload) {
   const grade = Number(student.anio_actual || '');
 
   const catalogFull = getCatalog_();
-  const catalog = filterCatalogForStudent_(catalogFull, student);
+  const allowedCatalog = filterCatalogForStudent_(catalogFull, student);
+
+  const catalogMap = {};
+  catalogFull.forEach(m => { catalogMap[m.id_materia] = m; });
+
+  const allowedSet = {};
+  allowedCatalog.forEach(m => { allowedSet[String(m.id_materia || '').trim()] = true; });
+
+  // ✅ Regla nueva: NO sincronizamos todo el catálogo.
+  // Solo sincronizamos:
+  //  - materias del AÑO del estudiante (según orientación)
+  //  - materias ADEUDADAS del ciclo anterior (no aprobadas)
+  // Sin traer materias de años FUTUROS ni materias APROBADAS.
+  const yearCatalog = (!isNaN(grade) && grade > 0)
+    ? allowedCatalog.filter(m => Number(m.anio || '') === grade)
+    : [];
 
   const sh = sheet_(SHEETS.ESTADO);
   const { headers, rows } = getValues_(sh);
   const idx = headerMap_(headers);
 
-  // Historial para inferir aprobadas / nunca cursada
   const cycleNum = Number(ciclo);
   const hasCycleNum = !isNaN(cycleNum);
 
+  // Detectar ciclo anterior numérico (si el ciclo actual es numérico)
+  let prevCycleNum = null;
+  if (hasCycleNum) {
+    rows.forEach(r => {
+      const rEst = String(r[idx['id_estudiante']] || '').trim();
+      if (rEst !== idEst) return;
+      const rCiclo = String(r[idx['ciclo_lectivo']] || '').trim();
+      const cNum = Number(rCiclo);
+      if (isNaN(cNum)) return;
+      if (cNum < cycleNum && (prevCycleNum === null || cNum > prevCycleNum)) prevCycleNum = cNum;
+    });
+  }
+
+  // Historial para inferir aprobadas / nunca cursada (solo ciclos anteriores)
   const approvedMap = {}; // mid -> true
   const regularMap = {};  // mid -> true (alguna vez cursó regular)
   rows.forEach(r => {
@@ -1211,7 +1243,6 @@ function syncCatalogRows_(payload) {
     const rMat = String(r[idx['id_materia']] || '').trim();
     if (rEst !== idEst || !rMat) return;
 
-    // Considerar solo ciclos anteriores si son numéricos
     if (hasCycleNum) {
       const cNum = Number(rCiclo);
       if (!isNaN(cNum) && cNum >= cycleNum) return;
@@ -1226,6 +1257,35 @@ function syncCatalogRows_(payload) {
     if (sit === 'cursa_primera_vez' || sit === 'recursa') regularMap[rMat] = true;
   });
 
+  // Adeudadas del ciclo anterior (solo si existe prevCycleNum)
+  const owedFromPrev = {};
+  if (prevCycleNum !== null) {
+    rows.forEach(r => {
+      const rCiclo = String(r[idx['ciclo_lectivo']] || '').trim();
+      const cNum = Number(rCiclo);
+      if (isNaN(cNum) || cNum !== prevCycleNum) return;
+
+      const rEst = String(r[idx['id_estudiante']] || '').trim();
+      if (rEst !== idEst) return;
+
+      const mid = String(r[idx['id_materia']] || '').trim();
+      if (!mid) return;
+
+      // Respetar orientación (si la materia tiene orientación en catálogo)
+      if (!allowedSet[mid]) return;
+
+      const cond = String(r[idx['condicion_academica']] || '').trim().toLowerCase();
+      if (cond !== 'adeuda') return;
+
+      // Evitar traer años futuros
+      const cat = catalogMap[mid];
+      const matYear = cat ? Number(cat.anio || '') : NaN;
+      if (!isNaN(grade) && grade > 0 && !isNaN(matYear) && matYear >= grade) return;
+
+      owedFromPrev[mid] = true;
+    });
+  }
+
   const existing = new Set();
   rows.forEach(r => {
     const rCiclo = String(r[idx['ciclo_lectivo']] || '').trim();
@@ -1234,36 +1294,51 @@ function syncCatalogRows_(payload) {
     if (rCiclo === ciclo && rEst === idEst && rMat) existing.add(rMat);
   });
 
+  // Union: año actual + adeudadas previas
+  const needed = [];
+  const seen = {};
+  yearCatalog.forEach(m => {
+    const mid = String(m.id_materia || '').trim();
+    if (!mid || seen[mid]) return;
+    seen[mid] = true;
+    needed.push(mid);
+  });
+  Object.keys(owedFromPrev).forEach(mid => {
+    if (!mid || seen[mid]) return;
+    seen[mid] = true;
+    needed.push(mid);
+  });
+
   const now = new Date();
   let added = 0;
 
-  catalog.forEach(m => {
-    if (existing.has(m.id_materia)) return;
+  needed.forEach(mid => {
+    if (existing.has(mid)) return;
 
-    const approved = !!approvedMap[m.id_materia];
-    const everRegular = !!regularMap[m.id_materia];
+    // No crear filas de materias ya aprobadas
+    if (approvedMap[mid]) return;
 
-    const condicion = approved ? 'aprobada' : 'adeuda';
-    const nunca = approved ? false : !everRegular;
+    const everRegular = !!regularMap[mid];
 
     const obj = {};
     headers.forEach(h => obj[h] = '');
 
     obj['ciclo_lectivo'] = ciclo;
     obj['id_estudiante'] = idEst;
-    obj['id_materia'] = m.id_materia;
+    obj['id_materia'] = mid;
 
-    if (obj.hasOwnProperty('condicion_academica')) obj['condicion_academica'] = condicion;
-    if (obj.hasOwnProperty('nunca_cursada')) obj['nunca_cursada'] = nunca;
+    if (obj.hasOwnProperty('condicion_academica')) obj['condicion_academica'] = 'adeuda';
+    if (obj.hasOwnProperty('nunca_cursada')) obj['nunca_cursada'] = !everRegular;
 
-    // Situación sugerida (simple): futuros -> próximos años, mismo año -> cursa 1ra vez, anteriores -> recursa
+    // Situación sugerida: año -> cursa 1ra vez; adeudada previa -> recursa
     let sit = 'no_cursa_otro_motivo';
     let motivo = '';
-    const matYear = Number(m.anio || '');
-    if (!isNaN(matYear) && !isNaN(grade) && grade) {
-      if (matYear > grade) { sit = 'proximos_anos'; motivo = 'Próximos años (aún no corresponde)'; }
-      else if (!approved && matYear === grade) { sit = 'cursa_primera_vez'; }
-      else if (!approved && matYear < grade) { sit = 'recursa'; }
+    const cat = catalogMap[mid] || {};
+    const matYear = Number(cat.anio || '');
+
+    if (!isNaN(grade) && grade > 0 && !isNaN(matYear) && matYear > 0) {
+      if (matYear === grade) sit = 'cursa_primera_vez';
+      else if (matYear < grade) sit = 'recursa';
     }
 
     if (obj.hasOwnProperty('situacion_actual')) obj['situacion_actual'] = sit;
@@ -1412,290 +1487,10 @@ function closeCycle_(payload) {
     sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
   }
 
-  // Pase automático a EGRESADOS (solo si no adeuda nada)
-  let egresoInfo = null;
-  if (updated > 0) {
-    if (idEst) {
-      egresoInfo = tryMoveStudentToEgresados_({ id_estudiante: idEst, ciclo_egreso: ciclo, usuario });
-    } else {
-      egresoInfo = moveEligibleStudentsToEgresados_({ ciclo_egreso: ciclo, usuario });
-    }
-  }
+  // devolver estado si se cerró un estudiante
+  const status = idEst ? getStudentStatus_({ ciclo_lectivo: ciclo, id_estudiante: idEst }) : null;
 
-  const movedSingle = !!(egresoInfo && egresoInfo.moved);
-  const movedCount = (egresoInfo && typeof egresoInfo.moved_count === 'number') ? egresoInfo.moved_count : (movedSingle ? 1 : 0);
-
-  // devolver estado si se cerró un estudiante (pero si se movió a egresados, ya no hace falta)
-  const status = (idEst && !movedSingle) ? getStudentStatus_({ ciclo_lectivo: ciclo, id_estudiante: idEst }) : null;
-
-  return {
-    ciclo_lectivo: ciclo,
-    id_estudiante: idEst || null,
-    filas_revisadas: scanned,
-    filas_actualizadas: updated,
-    moved_to_egresados: movedSingle,
-    moved_count: movedCount,
-    egreso: (egresoInfo && egresoInfo.egreso) ? egresoInfo.egreso : null,
-    status
-  };
-}
-
-// ======== EGRESADOS + LIMPIEZA ========
-
-function ensureSheetWithHeaders_(name, headers) {
-  const ss = ss_();
-  let sh = ss.getSheetByName(name);
-  if (!sh) {
-    sh = ss.insertSheet(name);
-    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
-    return sh;
-  }
-  const existing = sh.getDataRange().getValues();
-  if (!existing || existing.length === 0) {
-    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
-    return sh;
-  }
-  const firstRow = existing[0].map(x => String(x).trim());
-  const ok = headers.every((h, i) => String(firstRow[i] || '').trim() === h);
-  if (!ok) {
-    // No pisamos data existente: solo aseguramos que haya encabezados.
-    // Si están distintos, agregamos una fila arriba con los encabezados esperados.
-    sh.insertRowBefore(1);
-    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
-  }
-  return sh;
-}
-
-function ensureEgresadosSheet_() {
-  return ensureSheetWithHeaders_(SHEETS.EGRESADOS, [
-    'id_estudiante',
-    'apellido',
-    'nombre',
-    'division',
-    'turno',
-    'ciclo_egreso',
-    'fecha_pase_egresados',
-    'observaciones'
-  ]);
-}
-
-function ensureAprobadasLimpiezaSheet_(estadoHeaders) {
-  const headers = (estadoHeaders && estadoHeaders.length) ? estadoHeaders : getValues_(sheet_(SHEETS.ESTADO)).headers;
-  return ensureSheetWithHeaders_(SHEETS.APROB_LIMPIEZA, headers);
-}
-
-function normalizeCond_(s) {
-  return String(s || '').trim().toLowerCase();
-}
-
-function getApprovedMateriaIdsForStudent_(idEst) {
-  const sid = String(idEst || '').trim();
-  if (!sid) return {};
-
-  const out = {};
-
-  const addFromSheet_ = (sheetName) => {
-    const ss = ss_();
-    const sh = ss.getSheetByName(sheetName);
-    if (!sh) return;
-    const { headers, rows } = getValues_(sh);
-    const idx = headerMap_(headers);
-    if (idx['id_estudiante'] === undefined || idx['id_materia'] === undefined || idx['condicion_academica'] === undefined) return;
-
-    rows.forEach(r => {
-      const rSid = String(r[idx['id_estudiante']] || '').trim();
-      if (rSid !== sid) return;
-      const mid = String(r[idx['id_materia']] || '').trim();
-      if (!mid) return;
-      const cond = normalizeCond_(r[idx['condicion_academica']]);
-      if (cond === 'aprobada' || cond === 'aprobado') out[mid] = true;
-    });
-  };
-
-  addFromSheet_(SHEETS.ESTADO);
-  addFromSheet_(SHEETS.APROB_LIMPIEZA);
-  return out;
-}
-
-function isStudentEligibleToGraduate_(student) {
-  if (!student || !student.id_estudiante) return { ok: false, reason: 'student_missing' };
-
-  const sid = String(student.id_estudiante || '').trim();
-  const orient = String(student.orientacion || '').trim();
-
-  const catalogAll = getCatalog_();
-  const anyOrient = catalogAll.some(m => normalizeOrient_(m.orientacion));
-  if (anyOrient && !orient) {
-    return { ok: false, reason: 'falta_orientacion' };
-  }
-
-  // Para validar egreso, consideramos el catálogo completo aplicable a 6º (incluye materias comunes + de orientación)
-  const required = (catalogAll || [])
-    .filter(m => catalogAplicaAStudent_(m, 6, orient))
-    .map(m => String(m.id_materia || '').trim())
-    .filter(Boolean);
-
-  if (!required.length) return { ok: false, reason: 'sin_catalogo' };
-
-  const approved = getApprovedMateriaIdsForStudent_(sid);
-  const pending = required.filter(mid => !approved[mid]);
-
-  if (pending.length === 0) return { ok: true, pending_count: 0 };
-  return { ok: false, pending_count: pending.length, reason: 'adeuda' };
-}
-
-function tryMoveStudentToEgresados_(payload) {
-  const sid = String(payload.id_estudiante || '').trim();
-  const cicloEgreso = String(payload.ciclo_egreso || '').trim();
-  const usuario = String(payload.usuario || 'web').trim();
-  if (!sid) return { moved: false, reason: 'id_missing' };
-
-  const egSh = ensureEgresadosSheet_();
-  const { headers: egH, rows: egR } = getValues_(egSh);
-  const egIdx = headerMap_(egH);
-  const already = egR.some(r => String(r[egIdx['id_estudiante']] || '').trim() === sid);
-  if (already) return { moved: false, reason: 'ya_en_egresados' };
-
-  const stSh = sheet_(SHEETS.ESTUDIANTES);
-  const { headers: stH, rows: stR } = getValues_(stSh);
-  const stIdx = headerMap_(stH);
-  if (stIdx['id_estudiante'] === undefined) return { moved: false, reason: 'estudiantes_sin_id' };
-
-  let rowIndex = -1;
-  for (let i = 0; i < stR.length; i++) {
-    const id = String(stR[i][stIdx['id_estudiante']] || '').trim();
-    if (id === sid) { rowIndex = i; break; }
-  }
-  if (rowIndex === -1) return { moved: false, reason: 'no_en_estudiantes' };
-
-  const stObj = rowToObj_(stH, stR[rowIndex]);
-  // No mover si está inactivo
-  if (stIdx['activo'] !== undefined && toBool_(stR[rowIndex][stIdx['activo']]) === false) {
-    return { moved: false, reason: 'inactivo' };
-  }
-
-  const elig = isStudentEligibleToGraduate_(stObj);
-  if (!elig.ok) return { moved: false, reason: elig.reason || 'no_eligible', pending_count: elig.pending_count || 0 };
-
-  const now = new Date();
-  const egRowObj = {
-    id_estudiante: sid,
-    apellido: String(stObj.apellido || '').trim(),
-    nombre: String(stObj.nombre || '').trim(),
-    division: String(stObj.division || '').trim(),
-    turno: String(stObj.turno || '').trim(),
-    ciclo_egreso: cicloEgreso || '',
-    fecha_pase_egresados: now,
-    observaciones: String(stObj.observaciones || '').trim()
-  };
-
-  egSh.appendRow(egH.map(h => egRowObj[h] !== undefined ? egRowObj[h] : ''));
-
-  // Auditoría (si existe)
-  const auditSh = ss_().getSheetByName(SHEETS.AUDITORIA);
-  if (auditSh) {
-    auditSh.appendRow([now, cicloEgreso || '', sid, '', 'pase_egresados', '', 'true', usuario]);
-  }
-
-  // Borrar la fila de Estudiantes
-  const sheetRow = rowIndex + 2;
-  stSh.deleteRow(sheetRow);
-
-  return { moved: true, egreso: { id_estudiante: sid, ciclo_egreso: cicloEgreso || '', fecha_pase_egresados: now } };
-}
-
-function moveEligibleStudentsToEgresados_(payload) {
-  const cicloEgreso = String(payload.ciclo_egreso || '').trim();
-  const usuario = String(payload.usuario || 'web').trim();
-
-  const stSh = sheet_(SHEETS.ESTUDIANTES);
-  const { headers: stH, rows: stR } = getValues_(stSh);
-  const stIdx = headerMap_(stH);
-  if (stIdx['id_estudiante'] === undefined) return { moved_count: 0, moved_ids: [] };
-
-  const movedIds = [];
-
-  // Iterar de abajo hacia arriba para poder deleteRow
-  for (let i = stR.length - 1; i >= 0; i--) {
-    const sid = String(stR[i][stIdx['id_estudiante']] || '').trim();
-    if (!sid) continue;
-    const activo = (stIdx['activo'] !== undefined) ? toBool_(stR[i][stIdx['activo']]) : true;
-    if (activo === false) continue;
-
-    const stObj = rowToObj_(stH, stR[i]);
-    const elig = isStudentEligibleToGraduate_(stObj);
-    if (!elig.ok) continue;
-
-    const res = tryMoveStudentToEgresados_({ id_estudiante: sid, ciclo_egreso: cicloEgreso, usuario });
-    if (res && res.moved) movedIds.push(sid);
-  }
-
-  return { moved_count: movedIds.length, moved_ids: movedIds };
-}
-
-function cleanApprovedRows_(payload) {
-  payload = payload || {};
-  const onlyCycle = String(payload.ciclo_lectivo || '').trim();
-
-  const sh = sheet_(SHEETS.ESTADO);
-  const { headers, rows } = getValues_(sh);
-  const idx = headerMap_(headers);
-
-  if (idx['condicion_academica'] === undefined) throw new Error('En EstadoPorCiclo falta la columna condicion_academica');
-  if (onlyCycle && idx['ciclo_lectivo'] === undefined) throw new Error('En EstadoPorCiclo falta la columna ciclo_lectivo');
-
-  const dest = ensureAprobadasLimpiezaSheet_(headers);
-
-  const approved = [];
-  const keep = [];
-
-  rows.forEach(r => {
-    const cond = normalizeCond_(r[idx['condicion_academica']]);
-    const ciclo = onlyCycle ? String(r[idx['ciclo_lectivo']] || '').trim() : '';
-
-    const matchCycle = onlyCycle ? (ciclo === onlyCycle) : true;
-    if (matchCycle && (cond === 'aprobada' || cond === 'aprobado')) approved.push(r);
-    else keep.push(r);
-  });
-
-  if (approved.length) {
-    dest.getRange(dest.getLastRow() + 1, 1, approved.length, headers.length).setValues(approved);
-  }
-
-  // Reescribir EstadoPorCiclo sin las aprobadas
-  if (rows.length) {
-    sh.getRange(2, 1, rows.length, headers.length).clearContent();
-  }
-  if (keep.length) {
-    sh.getRange(2, 1, keep.length, headers.length).setValues(keep);
-  }
-
-  return { ciclo_filtrado: onlyCycle || null, filas_aprobadas_movidas: approved.length, filas_restantes: keep.length };
-}
-
-function getEgresados_(payload) {
-  ensureEgresadosSheet_();
-  const sh = sheet_(SHEETS.EGRESADOS);
-  const { headers, rows } = getValues_(sh);
-  const idx = headerMap_(headers);
-
-  const out = rows
-    .filter(r => r.some(c => String(c).trim() !== ''))
-    .map(r => ({
-      id_estudiante: String(r[idx['id_estudiante']] || '').trim(),
-      apellido: String(r[idx['apellido']] || '').trim(),
-      nombre: String(r[idx['nombre']] || '').trim(),
-      ciclo_egreso: String(r[idx['ciclo_egreso']] || '').trim(),
-      division: String(r[idx['division']] || '').trim(),
-      turno: String(r[idx['turno']] || '').trim(),
-      fecha_pase_egresados: r[idx['fecha_pase_egresados']] ? new Date(r[idx['fecha_pase_egresados']]).toISOString() : '',
-      observaciones: String(r[idx['observaciones']] || '').trim()
-    }))
-    .filter(x => x.id_estudiante);
-
-  // Orden: más recientes arriba si hay ciclo
-  out.sort((a,b) => String(b.ciclo_egreso || '').localeCompare(String(a.ciclo_egreso || '')) || String(a.apellido || '').localeCompare(String(b.apellido || '')));
-  return { egresados: out };
+  return { ciclo_lectivo: ciclo, id_estudiante: idEst || null, filas_revisadas: scanned, filas_actualizadas: updated, status };
 }
 // ======== Output ========
 function jsonOut_(obj, statusCode) {
